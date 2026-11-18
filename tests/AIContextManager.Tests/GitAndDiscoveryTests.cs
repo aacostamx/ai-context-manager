@@ -34,6 +34,26 @@ public class GitAndDiscoveryTests : IDisposable
     }
 
     [Fact]
+    public void Excluded_folder_and_everything_inside_is_ignored()
+    {
+        _repos.CreateRepository("intsol-biography-api");
+        var hidden = Path.Combine(_repos.Source, "Repos", "old-stuff", "intsol-biography-ui");
+        Directory.CreateDirectory(Path.Combine(hidden, ".git"));
+        File.WriteAllText(Path.Combine(hidden, ".git", "HEAD"), "ref: refs/heads/main\n");
+        var directRepo = Path.Combine(_repos.Source, "Repos");
+        File.WriteAllText(Path.Combine(directRepo, ".git"), "gitdir: C:/elsewhere/.git\n"); // even Repos itself as a repo
+
+        var options = Options();
+        options.ExcludedFolders = ["Repos"];
+        var found = new RepositoryDiscoveryService(Microsoft.Extensions.Options.Options.Create(options),
+            NullLogger<RepositoryDiscoveryService>.Instance).Discover();
+
+        Assert.Equal(["intsol-biography-api"], found.Select(Path.GetFileName));
+        Assert.True(options.IsExcluded(Path.Combine(hidden, "src", "App.tsx")));
+        Assert.False(options.IsExcluded(Path.Combine(_repos.Source, "Repositories")));
+    }
+
+    [Fact]
     public void Discovers_worktree_with_git_file()
     {
         var worktree = Path.Combine(_repos.Source, "intsol-biography-api");

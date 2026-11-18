@@ -221,6 +221,8 @@ public sealed class ContextMonitorService(
 
     internal void OnFileSystemEvent(string fullPath)
     {
+        if (_o.IsExcluded(fullPath)) return; // ExcludedFolders are invisible to the app
+
         var repo = _repos.FirstOrDefault(r => PathUtil.IsSameOrUnder(fullPath, r.RootPath));
         if (repo is null)
         {

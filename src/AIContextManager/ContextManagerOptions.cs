@@ -54,7 +54,18 @@ public sealed class ContextManagerOptions
     /// <summary>Extra glob patterns passed to Repomix --ignore for every repository.</summary>
     public string[] ExtraIgnorePatterns { get; set; } = [];
 
+    /// <summary>
+    /// Folders skipped completely, with everything inside them: no discovery, no watching.
+    /// Relative paths are resolved against SourcePath (e.g. "Repos" = SourcePath\Repos); absolute paths are also accepted.
+    /// </summary>
+    public string[] ExcludedFolders { get; set; } = [];
+
     public string BranchFor(ContextEnvironment env) => env == ContextEnvironment.Dev ? Branches.Dev : Branches.Prod;
+
+    /// <summary>True when <paramref name="fullPath"/> is one of the ExcludedFolders or inside one.</summary>
+    public bool IsExcluded(string fullPath) =>
+        ExcludedFolders.Any(f => !string.IsNullOrWhiteSpace(f) &&
+                                 PathUtil.IsSameOrUnder(fullPath, Path.IsPathRooted(f) ? f : Path.Combine(SourcePath, f)));
 }
 
 public sealed class BranchOptions

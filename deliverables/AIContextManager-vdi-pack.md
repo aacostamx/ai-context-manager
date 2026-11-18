@@ -143,7 +143,7 @@ dotnet run --project src/AIContextManager -- --once
 Any setting can be overridden on the command line:
 
 ```bash
-dotnet run --project src/AIContextManager -- --ContextManager:SourcePath=C:\source --ContextManager:OutputPath=C:\AI-Context
+dotnet run --project src/AIContextManager -- --ContextManager:SourcePath=C:\Users\O7U\source --ContextManager:OutputPath=C:\Users\O7U\AI-Context
 ```
 
 Tests:
@@ -156,8 +156,9 @@ dotnet test
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `SourcePath` | `C:\source` | Folder with your repositories. Required. |
-| `OutputPath` | `C:\AI-Context` | Where contexts and `00-INDEX.md` go. Must not be inside `SourcePath`. |
+| `SourcePath` | `C:\Users\O7U\source` | Folder with your repositories. Required. |
+| `ExcludedFolders` | `["Repos"]` | Folders ignored completely, with everything inside (no discovery, no watching). Relative to `SourcePath`, or absolute. |
+| `OutputPath` | `C:\Users\O7U\AI-Context` | Where contexts and `00-INDEX.md` go. Must not be inside `SourcePath`. |
 | `StagingPath` | `%LOCALAPPDATA%\AIContextManager\staging` | Local work area: snapshots, scan reports, `state.json`. Never cloud-synced. |
 | `Branches:Dev` / `Branches:Prod` | `develop` / `main` | Remote branches used for DEV and PROD. |
 | `AutoDiscover` | `true` | Pick up added/removed repositories while running. |
@@ -271,8 +272,9 @@ Because contexts contain full source, the app refuses a OneDrive/SharePoint `Out
 ````json
 {
   "ContextManager": {
-    "SourcePath": "C:\\source",
-    "OutputPath": "C:\\AI-Context",
+    "SourcePath": "C:\\Users\\O7U\\source",
+    "ExcludedFolders": [ "Repos" ],
+    "OutputPath": "C:\\Users\\O7U\\AI-Context",
     "Branches": {
       "Dev": "develop",
       "Prod": "main"
@@ -567,7 +569,18 @@ public sealed class ContextManagerOptions
     /// <summary>Extra glob patterns passed to Repomix --ignore for every repository.</summary>
     public string[] ExtraIgnorePatterns { get; set; } = [];
 
+    /// <summary>
+    /// Folders skipped completely, with everything inside them: no discovery, no watching.
+    /// Relative paths are resolved against SourcePath (e.g. "Repos" = SourcePath\Repos); absolute paths are also accepted.
+    /// </summary>
+    public string[] ExcludedFolders { get; set; } = [];
+
     public string BranchFor(ContextEnvironment env) => env == ContextEnvironment.Dev ? Branches.Dev : Branches.Prod;
+
+    /// <summary>True when <paramref name="fullPath"/> is one of the ExcludedFolders or inside one.</summary>
+    public bool IsExcluded(string fullPath) =>
+        ExcludedFolders.Any(f => !string.IsNullOrWhiteSpace(f) &&
+                                 PathUtil.IsSameOrUnder(fullPath, Path.IsPathRooted(f) ? f : Path.Combine(SourcePath, f)));
 }
 
 public sealed class BranchOptions
@@ -869,6 +882,8 @@ public sealed class ContextMonitorService(
 
     internal void OnFileSystemEvent(string fullPath)
     {
+        if (_o.IsExcluded(fullPath)) return; // ExcludedFolders are invisible to the app
+
         var repo = _repos.FirstOrDefault(r => PathUtil.IsSameOrUnder(fullPath, r.RootPath));
         if (repo is null)
         {
@@ -1608,6 +1623,7 @@ public sealed class RepositoryDiscoveryService(IOptions<ContextManagerOptions> o
             if (SkippedFolders.Contains(child.Name)) continue;
             if (child.Attributes.HasFlag(FileAttributes.ReparsePoint)) continue; // junctions/symlinks: avoid loops
             if (PathUtil.IsSameOrUnder(child.FullName, _o.OutputPath) || PathUtil.IsSameOrUnder(child.FullName, _o.StagingPath)) continue;
+            if (_o.IsExcluded(child.FullName)) continue; // ExcludedFolders, e.g. SourcePath\Repos and everything inside
             Walk(child.FullName, depth + 1, found);
         }
     }
@@ -2049,6 +2065,26 @@ public class GitAndDiscoveryTests : IDisposable
         var found = Discovery().Discover().Select(Path.GetFileName).ToList();
 
         Assert.Equal(["intsol-dna-list-matching-api", "intsol-dna-list-matching-ui"], found);
+    }
+
+    [Fact]
+    public void Excluded_folder_and_everything_inside_is_ignored()
+    {
+        _repos.CreateRepository("intsol-biography-api");
+        var hidden = Path.Combine(_repos.Source, "Repos", "old-stuff", "intsol-biography-ui");
+        Directory.CreateDirectory(Path.Combine(hidden, ".git"));
+        File.WriteAllText(Path.Combine(hidden, ".git", "HEAD"), "ref: refs/heads/main\n");
+        var directRepo = Path.Combine(_repos.Source, "Repos");
+        File.WriteAllText(Path.Combine(directRepo, ".git"), "gitdir: C:/elsewhere/.git\n"); // even Repos itself as a repo
+
+        var options = Options();
+        options.ExcludedFolders = ["Repos"];
+        var found = new RepositoryDiscoveryService(Microsoft.Extensions.Options.Options.Create(options),
+            NullLogger<RepositoryDiscoveryService>.Instance).Discover();
+
+        Assert.Equal(["intsol-biography-api"], found.Select(Path.GetFileName));
+        Assert.True(options.IsExcluded(Path.Combine(hidden, "src", "App.tsx")));
+        Assert.False(options.IsExcluded(Path.Combine(_repos.Source, "Repositories")));
     }
 
     [Fact]

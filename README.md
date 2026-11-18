@@ -37,7 +37,7 @@ dotnet run --project src/AIContextManager -- --once
 Any setting can be overridden on the command line:
 
 ```bash
-dotnet run --project src/AIContextManager -- --ContextManager:SourcePath=C:\source --ContextManager:OutputPath=C:\AI-Context
+dotnet run --project src/AIContextManager -- --ContextManager:SourcePath=C:\Users\O7U\source --ContextManager:OutputPath=C:\Users\O7U\AI-Context
 ```
 
 Tests:
@@ -50,8 +50,9 @@ dotnet test
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `SourcePath` | `C:\source` | Folder with your repositories. Required. |
-| `OutputPath` | `C:\AI-Context` | Where contexts and `00-INDEX.md` go. Must not be inside `SourcePath`. |
+| `SourcePath` | `C:\Users\O7U\source` | Folder with your repositories. Required. |
+| `ExcludedFolders` | `["Repos"]` | Folders ignored completely, with everything inside (no discovery, no watching). Relative to `SourcePath`, or absolute. |
+| `OutputPath` | `C:\Users\O7U\AI-Context` | Where contexts and `00-INDEX.md` go. Must not be inside `SourcePath`. |
 | `StagingPath` | `%LOCALAPPDATA%\AIContextManager\staging` | Local work area: snapshots, scan reports, `state.json`. Never cloud-synced. |
 | `Branches:Dev` / `Branches:Prod` | `develop` / `main` | Remote branches used for DEV and PROD. |
 | `AutoDiscover` | `true` | Pick up added/removed repositories while running. |

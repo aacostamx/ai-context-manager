@@ -50,6 +50,7 @@ public sealed class RepositoryDiscoveryService(IOptions<ContextManagerOptions> o
             if (SkippedFolders.Contains(child.Name)) continue;
             if (child.Attributes.HasFlag(FileAttributes.ReparsePoint)) continue; // junctions/symlinks: avoid loops
             if (PathUtil.IsSameOrUnder(child.FullName, _o.OutputPath) || PathUtil.IsSameOrUnder(child.FullName, _o.StagingPath)) continue;
+            if (_o.IsExcluded(child.FullName)) continue; // ExcludedFolders, e.g. SourcePath\Repos and everything inside
             Walk(child.FullName, depth + 1, found);
         }
     }
