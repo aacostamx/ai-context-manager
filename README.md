@@ -61,6 +61,7 @@ dotnet test
 | `DebounceSeconds` | `10` | Quiet time after file events before a check. |
 | `RepomixCommand` | `repomix` | Name or full path of the Repomix CLI. |
 | `AllowCloudPublish` | `false` | Must be `true` to write into a OneDrive/SharePoint folder. Set only if your policy allows full source in that location. |
+| `BlockOnSecrets` | `false` | `true`: a context with possible secrets is not published. `false`: it is published anyway and the locations are logged as a warning and written to the scan report. |
 | `SharedRepositories` | `[]` | Extra names to treat as shared infrastructure. |
 | `ExtraIgnorePatterns` | `[]` | Extra Repomix `--ignore` globs for all repositories. |
 
@@ -83,7 +84,8 @@ Configuration is validated at startup; the app exits with a clear message when s
    `checkout`, `reset` or `clean`, never creates worktrees, and uncommitted changes are never included.
 4. **Repomix.** One run per repository, Markdown style, respecting the snapshot's `.gitignore` and `.repomixignore`,
    plus built-in ignores (build output, lock files, logs, previously generated contexts).
-5. **Security, fail-closed.**
+5. **Security.** (Blocking applies only when `BlockOnSecrets` is `true`; with `false` the context is published
+   and the findings are only reported.)
    - Known sensitive files are never copied into the snapshot: `.env*` (except `.env.example`), `*.pfx`, `*.pem`,
      `*.key`, `id_rsa*`, `.npmrc`, `secrets.json`, `*.local.json`, `terraform.tfstate`, and similar.
    - The generated file is scanned (private keys, AWS/GitHub/Slack/Azure keys, JWTs, passwords in connection strings,

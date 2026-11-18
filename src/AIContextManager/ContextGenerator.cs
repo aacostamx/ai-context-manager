@@ -17,7 +17,8 @@ public sealed class ContextGenerator(
     private const string FormatVersion = "3"; // bump when the output format changes to force regeneration
     private readonly ContextManagerOptions _o = options.Value;
 
-    public string Fingerprint => ChangeDetector.Fingerprint([FormatVersion, .. repomix.IgnorePatterns]);
+    // BlockOnSecrets is part of the fingerprint so blocked repos are retried as soon as the setting is turned off.
+    public string Fingerprint => ChangeDetector.Fingerprint([FormatVersion, $"block={_o.BlockOnSecrets}", .. repomix.IgnorePatterns]);
 
     public async Task<ContextState> ProcessAsync(RepositoryInfo repo, ContextState? previous, CancellationToken ct)
     {
@@ -61,7 +62,11 @@ public sealed class ContextGenerator(
             PathUtil.WriteAtomically(stagedFile, content);
 
             var findings = SecretScanner.Scan(content);
-            if (findings.Count > 0)
+            if (findings.Count == 0)
+            {
+                if (File.Exists(reportFile)) File.Delete(reportFile);
+            }
+            else if (_o.BlockOnSecrets)
             {
                 // Fail closed: do not publish, do not keep the staged copy, report locations only.
                 File.Delete(stagedFile);
@@ -70,8 +75,13 @@ public sealed class ContextGenerator(
                     label, findings.Count, reportFile);
                 return state with { Status = ContextStatus.Blocked, Message = $"{findings.Count} possible secret(s); see {reportFile}" };
             }
+            else
+            {
+                PathUtil.WriteAtomically(reportFile, BuildReport(label, sha, findings));
+                log.LogWarning("{Context}: {Count} possible secret(s) found, published anyway (BlockOnSecrets is false). Locations: {Report}",
+                    label, findings.Count, reportFile);
+            }
 
-            if (File.Exists(reportFile)) File.Delete(reportFile);
             Directory.CreateDirectory(Path.GetDirectoryName(publishedFile)!);
             File.Copy(stagedFile, publishedFile + ".tmp", overwrite: true);
             File.Move(publishedFile + ".tmp", publishedFile, overwrite: true);

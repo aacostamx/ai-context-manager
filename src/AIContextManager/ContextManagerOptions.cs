@@ -41,6 +41,12 @@ public sealed class ContextManagerOptions
     /// </summary>
     public bool AllowCloudPublish { get; set; }
 
+    /// <summary>
+    /// True: a context with possible secrets is not published (fail-closed).
+    /// False: it is published anyway; the locations are still logged as a warning and written to the scan report.
+    /// </summary>
+    public bool BlockOnSecrets { get; set; } = true;
+
     /// <summary>Extra repository names to treat as shared infrastructure (GitOps and *-helm-chart are detected automatically).</summary>
     public string[] SharedRepositories { get; set; } = [];
 

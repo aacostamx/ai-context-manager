@@ -167,6 +167,7 @@ dotnet test
 | `DebounceSeconds` | `10` | Quiet time after file events before a check. |
 | `RepomixCommand` | `repomix` | Name or full path of the Repomix CLI. |
 | `AllowCloudPublish` | `false` | Must be `true` to write into a OneDrive/SharePoint folder. Set only if your policy allows full source in that location. |
+| `BlockOnSecrets` | `false` | `true`: a context with possible secrets is not published. `false`: it is published anyway and the locations are logged as a warning and written to the scan report. |
 | `SharedRepositories` | `[]` | Extra names to treat as shared infrastructure. |
 | `ExtraIgnorePatterns` | `[]` | Extra Repomix `--ignore` globs for all repositories. |
 
@@ -189,7 +190,8 @@ Configuration is validated at startup; the app exits with a clear message when s
    `checkout`, `reset` or `clean`, never creates worktrees, and uncommitted changes are never included.
 4. **Repomix.** One run per repository, Markdown style, respecting the snapshot's `.gitignore` and `.repomixignore`,
    plus built-in ignores (build output, lock files, logs, previously generated contexts).
-5. **Security, fail-closed.**
+5. **Security.** (Blocking applies only when `BlockOnSecrets` is `true`; with `false` the context is published
+   and the findings are only reported.)
    - Known sensitive files are never copied into the snapshot: `.env*` (except `.env.example`), `*.pfx`, `*.pem`,
      `*.key`, `id_rsa*`, `.npmrc`, `secrets.json`, `*.local.json`, `terraform.tfstate`, and similar.
    - The generated file is scanned (private keys, AWS/GitHub/Slack/Azure keys, JWTs, passwords in connection strings,
@@ -276,7 +278,8 @@ Because contexts contain full source, the app refuses a OneDrive/SharePoint `Out
     "GitCheckMinutes": 15,
     "DebounceSeconds": 10,
     "RepomixCommand": "repomix",
-    "AllowCloudPublish": false
+    "AllowCloudPublish": false,
+    "BlockOnSecrets": false
   },
   "Logging": {
     "LogLevel": {
@@ -371,7 +374,8 @@ public sealed class ContextGenerator(
     private const string FormatVersion = "3"; // bump when the output format changes to force regeneration
     private readonly ContextManagerOptions _o = options.Value;
 
-    public string Fingerprint => ChangeDetector.Fingerprint([FormatVersion, .. repomix.IgnorePatterns]);
+    // BlockOnSecrets is part of the fingerprint so blocked repos are retried as soon as the setting is turned off.
+    public string Fingerprint => ChangeDetector.Fingerprint([FormatVersion, $"block={_o.BlockOnSecrets}", .. repomix.IgnorePatterns]);
 
     public async Task<ContextState> ProcessAsync(RepositoryInfo repo, ContextState? previous, CancellationToken ct)
     {
@@ -415,7 +419,11 @@ public sealed class ContextGenerator(
             PathUtil.WriteAtomically(stagedFile, content);
 
             var findings = SecretScanner.Scan(content);
-            if (findings.Count > 0)
+            if (findings.Count == 0)
+            {
+                if (File.Exists(reportFile)) File.Delete(reportFile);
+            }
+            else if (_o.BlockOnSecrets)
             {
                 // Fail closed: do not publish, do not keep the staged copy, report locations only.
                 File.Delete(stagedFile);
@@ -424,8 +432,13 @@ public sealed class ContextGenerator(
                     label, findings.Count, reportFile);
                 return state with { Status = ContextStatus.Blocked, Message = $"{findings.Count} possible secret(s); see {reportFile}" };
             }
+            else
+            {
+                PathUtil.WriteAtomically(reportFile, BuildReport(label, sha, findings));
+                log.LogWarning("{Context}: {Count} possible secret(s) found, published anyway (BlockOnSecrets is false). Locations: {Report}",
+                    label, findings.Count, reportFile);
+            }
 
-            if (File.Exists(reportFile)) File.Delete(reportFile);
             Directory.CreateDirectory(Path.GetDirectoryName(publishedFile)!);
             File.Copy(stagedFile, publishedFile + ".tmp", overwrite: true);
             File.Move(publishedFile + ".tmp", publishedFile, overwrite: true);
@@ -527,6 +540,12 @@ public sealed class ContextManagerOptions
     /// OutputPath unless this is explicitly set to true.
     /// </summary>
     public bool AllowCloudPublish { get; set; }
+
+    /// <summary>
+    /// True: a context with possible secrets is not published (fail-closed).
+    /// False: it is published anyway; the locations are still logged as a warning and written to the scan report.
+    /// </summary>
+    public bool BlockOnSecrets { get; set; } = true;
 
     /// <summary>Extra repository names to treat as shared infrastructure (GitOps and *-helm-chart are detected automatically).</summary>
     public string[] SharedRepositories { get; set; } = [];
