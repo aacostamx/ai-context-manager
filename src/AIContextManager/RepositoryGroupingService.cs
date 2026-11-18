@@ -47,13 +47,13 @@ public sealed class RepositoryGroupingService(IOptions<ContextManagerOptions> op
         {
             if (p.Shared)
             {
-                result.Add(new RepositoryInfo(p.Name, p.Path, RepositoryInfo.SharedSolution, p.Name, p.Name, true));
+                result.Add(new RepositoryInfo(p.Name, p.Path, RepositoryInfo.SharedSolution, p.Name, true));
                 continue;
             }
 
             if (p.Split is not { } split)
             {
-                result.Add(new RepositoryInfo(p.Name, p.Path, p.Name, "Main", "Main", false));
+                result.Add(new RepositoryInfo(p.Name, p.Path, p.Name, "Main", false));
                 continue;
             }
 
@@ -74,16 +74,7 @@ public sealed class RepositoryGroupingService(IOptions<ContextManagerOptions> op
                 }
             }
 
-            result.Add(new RepositoryInfo(p.Name, p.Path, solution, component, component.Replace(' ', '-'), false));
-        }
-
-        // Two repositories mapping to the same folder (e.g. x-cronjob and x-cron-job): fall back to the repo name.
-        foreach (var clash in result.Where(r => !r.IsShared)
-                     .GroupBy(r => r.OutputFolder, StringComparer.OrdinalIgnoreCase)
-                     .Where(g => g.Count() > 1)
-                     .SelectMany(g => g).ToList())
-        {
-            result[result.IndexOf(clash)] = clash with { Component = clash.Name, ComponentFolder = clash.Name };
+            result.Add(new RepositoryInfo(p.Name, p.Path, solution, component, false));
         }
 
         return result

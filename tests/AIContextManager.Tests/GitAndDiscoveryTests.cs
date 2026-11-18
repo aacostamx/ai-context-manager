@@ -15,7 +15,7 @@ public class GitAndDiscoveryTests : IDisposable
         StagingPath = Path.Combine(_repos.Root, "staging"),
     };
 
-    private GitBranchService Git() => new(Microsoft.Extensions.Options.Options.Create(Options()), NullLogger<GitBranchService>.Instance);
+    private static GitBranchService Git() => new(NullLogger<GitBranchService>.Instance);
 
     private RepositoryDiscoveryService Discovery() =>
         new(Microsoft.Extensions.Options.Options.Create(Options()), NullLogger<RepositoryDiscoveryService>.Instance);
@@ -75,62 +75,60 @@ public class GitAndDiscoveryTests : IDisposable
     }
 
     [Fact]
-    public async Task Snapshot_reads_remote_branches_without_touching_the_working_repository()
+    public async Task Snapshot_is_last_commit_of_checked_out_branch_and_repo_is_untouched()
     {
-        var clone = _repos.CreateRepository("intsol-dna-list-matching-api");
+        var clone = _repos.CreateRepository("intsol-dna-list-matching-api"); // checked out on feature/my-work (from main)
         File.WriteAllText(Path.Combine(clone, "Program.cs"), "// uncommitted local edit\n");
         var statusBefore = TestRepos.Git(clone, "status", "--porcelain");
-        var headBefore = TestRepos.Git(clone, "rev-parse", "--abbrev-ref", "HEAD");
         var git = Git();
 
-        Assert.True(await git.FetchAsync(clone, CancellationToken.None));
-        var dev = await git.ResolveRemoteBranchAsync(clone, "develop", CancellationToken.None);
-        var prod = await git.ResolveRemoteBranchAsync(clone, "main", CancellationToken.None);
-        Assert.NotNull(dev);
-        Assert.NotNull(prod);
-        Assert.NotEqual(dev, prod);
+        var current = await git.GetCurrentAsync(clone, CancellationToken.None);
+        Assert.NotNull(current);
+        Assert.Equal("feature/my-work", current.Value.Branch);
 
         var target = Path.Combine(_repos.Root, "snap");
-        var (written, skipped) = await git.ExportSnapshotAsync(clone, dev!, target, CancellationToken.None);
+        var (written, skipped) = await git.ExportSnapshotAsync(clone, current.Value.Sha, target, CancellationToken.None);
 
-        Assert.Equal("Console.WriteLine(\"develop\");", File.ReadAllText(Path.Combine(target, "Program.cs")).TrimEnd()); // autocrlf may apply
+        // Committed content only (uncommitted edit not included), .env never copied.
+        Assert.Equal("Console.WriteLine(\"main\");", File.ReadAllText(Path.Combine(target, "Program.cs")).TrimEnd()); // autocrlf may apply
         Assert.False(File.Exists(Path.Combine(target, ".env")), ".env must never be copied");
         Assert.Equal(1, skipped);
         Assert.Equal(2, written);
 
         // The user's repository is exactly as before: same branch, same uncommitted change, no worktrees added.
-        Assert.Equal(headBefore, TestRepos.Git(clone, "rev-parse", "--abbrev-ref", "HEAD"));
+        Assert.Equal("feature/my-work", TestRepos.Git(clone, "rev-parse", "--abbrev-ref", "HEAD"));
         Assert.Equal(statusBefore, TestRepos.Git(clone, "status", "--porcelain"));
         Assert.Equal("// uncommitted local edit\n", File.ReadAllText(Path.Combine(clone, "Program.cs")));
         Assert.Single(TestRepos.Git(clone, "worktree", "list").Split('\n'));
     }
 
     [Fact]
-    public async Task Missing_branch_is_reported_not_substituted()
-    {
-        var clone = _repos.CreateRepository("intsol-biography-sync", withDevelop: false);
-
-        Assert.Null(await Git().ResolveRemoteBranchAsync(clone, "develop", CancellationToken.None));
-        Assert.NotNull(await Git().ResolveRemoteBranchAsync(clone, "main", CancellationToken.None));
-    }
-
-    [Fact]
-    public async Task Push_to_develop_changes_only_the_dev_commit()
+    public async Task Switching_branch_in_github_desktop_regenerates_the_context()
     {
         var clone = _repos.CreateRepository("intsol-dna-list-matching-ui");
         var git = Git();
-        var devBefore = await git.ResolveRemoteBranchAsync(clone, "develop", CancellationToken.None);
-        var prodBefore = await git.ResolveRemoteBranchAsync(clone, "main", CancellationToken.None);
-        var previousDev = new EnvState { CommitSha = devBefore, Status = ContextStatus.Ok, Fingerprint = "f" };
-        var previousProd = new EnvState { CommitSha = prodBefore, Status = ContextStatus.Ok, Fingerprint = "f" };
+        var before = (await git.GetCurrentAsync(clone, CancellationToken.None))!.Value;
+        var previous = new ContextState { Branch = before.Branch, CommitSha = before.Sha, Status = ContextStatus.Ok, Fingerprint = "f" };
+        Assert.False(ChangeDetector.NeedsRegeneration(previous, before.Sha, outputExists: true, "f"));
 
-        _repos.PushChange("intsol-dna-list-matching-ui", "develop", "App.tsx", "export {}\n");
-        await git.FetchAsync(clone, CancellationToken.None);
-        var devAfter = await git.ResolveRemoteBranchAsync(clone, "develop", CancellationToken.None);
-        var prodAfter = await git.ResolveRemoteBranchAsync(clone, "main", CancellationToken.None);
+        TestRepos.Git(clone, "checkout", "-q", "develop"); // the Current Branch dropdown in GitHub Desktop
+        var after = (await git.GetCurrentAsync(clone, CancellationToken.None))!.Value;
 
-        Assert.True(ChangeDetector.NeedsRegeneration(previousDev, devAfter!, outputExists: true, "f"));
-        Assert.False(ChangeDetector.NeedsRegeneration(previousProd, prodAfter!, outputExists: true, "f"));
+        Assert.Equal("develop", after.Branch);
+        Assert.True(ChangeDetector.NeedsRegeneration(previous, after.Sha, outputExists: true, "f"));
+
+        var target = Path.Combine(_repos.Root, "snap-dev");
+        await git.ExportSnapshotAsync(clone, after.Sha, target, CancellationToken.None);
+        Assert.Equal("Console.WriteLine(\"develop\");", File.ReadAllText(Path.Combine(target, "Program.cs")).TrimEnd());
+    }
+
+    [Fact]
+    public async Task Repository_without_commits_has_no_current_commit()
+    {
+        var empty = Path.Combine(_repos.Source, "intsol-new-api");
+        TestRepos.Git(_repos.Source, "init", "-q", empty);
+
+        Assert.Null(await Git().GetCurrentAsync(empty, CancellationToken.None));
     }
 
     public void Dispose() => _repos.Dispose();

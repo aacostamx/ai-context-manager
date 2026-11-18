@@ -4,8 +4,8 @@
 
 ## Components
 
-- **API** (`intsol-dna-list-matching-api`): [DEV](API/DEV-context.md) · [PROD](API/PROD-context.md)
-- **UI** (`intsol-dna-list-matching-ui`): [DEV](UI/DEV-context.md) · [PROD](UI/PROD-context.md)
+- **API**: [intsol-dna-list-matching-api](intsol-dna-list-matching-api-context.md)
+- **UI**: [intsol-dna-list-matching-ui](intsol-dna-list-matching-ui-context.md)
 
 ## How the components talk to each other
 

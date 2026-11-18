@@ -15,24 +15,17 @@ public sealed class ContextManagerOptions
     /// <summary>Local working area (snapshots, raw Repomix output, state). Defaults to %LOCALAPPDATA%\AIContextManager\staging.</summary>
     public string StagingPath { get; set; } = "";
 
-    public BranchOptions Branches { get; set; } = new();
-
     /// <summary>Re-scan SourcePath when folders are added or removed. When false, repositories are discovered once at startup.</summary>
     public bool AutoDiscover { get; set; } = true;
 
     /// <summary>Use FileSystemWatcher to react to new repositories and Git reference updates.</summary>
     public bool WatchChanges { get; set; } = true;
 
-    /// <summary>Minutes between "git fetch" + reference checks for all repositories.</summary>
+    /// <summary>Minutes between checks of the local origin/develop and origin/main refs of all repositories (no network).</summary>
     public int GitCheckMinutes { get; set; } = 15;
 
     /// <summary>Quiet period after the last file-system event before a repository is checked.</summary>
     public int DebounceSeconds { get; set; } = 10;
-
-    /// <summary>Run "git fetch" before checking references. When false only existing remote-tracking refs are used.</summary>
-    public bool FetchRemote { get; set; } = true;
-
-    public string RemoteName { get; set; } = "origin";
 
     /// <summary>Repomix executable name or full path.</summary>
     public string RepomixCommand { get; set; } = "repomix";
@@ -60,18 +53,10 @@ public sealed class ContextManagerOptions
     /// </summary>
     public string[] ExcludedFolders { get; set; } = [];
 
-    public string BranchFor(ContextEnvironment env) => env == ContextEnvironment.Dev ? Branches.Dev : Branches.Prod;
-
     /// <summary>True when <paramref name="fullPath"/> is one of the ExcludedFolders or inside one.</summary>
     public bool IsExcluded(string fullPath) =>
         ExcludedFolders.Any(f => !string.IsNullOrWhiteSpace(f) &&
                                  PathUtil.IsSameOrUnder(fullPath, Path.IsPathRooted(f) ? f : Path.Combine(SourcePath, f)));
-}
-
-public sealed class BranchOptions
-{
-    public string Dev { get; set; } = "develop";
-    public string Prod { get; set; } = "main";
 }
 
 public sealed class ContextManagerOptionsSetup : IPostConfigureOptions<ContextManagerOptions>
@@ -121,11 +106,6 @@ public sealed class ContextManagerOptionsValidator : IValidateOptions<ContextMan
                            "'AllowCloudPublish' is true. Set it only if your corporate policy permits it.");
         }
 
-        if (!IsValidRefName(o.Branches.Dev)) errors.Add("Branches:Dev is not a valid branch name.");
-        if (!IsValidRefName(o.Branches.Prod)) errors.Add("Branches:Prod is not a valid branch name.");
-        if (string.Equals(o.Branches.Dev, o.Branches.Prod, StringComparison.OrdinalIgnoreCase))
-            errors.Add("Branches:Dev and Branches:Prod must be different.");
-        if (!IsValidRefName(o.RemoteName)) errors.Add("RemoteName is not valid.");
         if (o.GitCheckMinutes < 1) errors.Add("GitCheckMinutes must be at least 1.");
         if (o.DebounceSeconds < 1) errors.Add("DebounceSeconds must be at least 1.");
         if (o.RepomixTimeoutMinutes < 1) errors.Add("RepomixTimeoutMinutes must be at least 1.");
@@ -134,8 +114,4 @@ public sealed class ContextManagerOptionsValidator : IValidateOptions<ContextMan
 
         return errors.Count == 0 ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(errors);
     }
-
-    private static bool IsValidRefName(string? b) =>
-        !string.IsNullOrWhiteSpace(b) && !b.StartsWith('-') && !b.Contains("..") &&
-        b.All(c => char.IsLetterOrDigit(c) || c is '-' or '_' or '.' or '/');
 }

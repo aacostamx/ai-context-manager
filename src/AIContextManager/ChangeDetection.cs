@@ -6,10 +6,10 @@ namespace AIContextManager;
 public static class ChangeDetector
 {
     /// <summary>
-    /// DEV/PROD contexts only depend on the commit of origin/{branch} and the generation settings,
-    /// so a context is regenerated only when one of those changed (or the published file disappeared).
+    /// A context only depends on the checked-out commit and the generation settings, so it is regenerated only
+    /// when one of those changed (new commit, pull or branch switch) or the published file disappeared.
     /// </summary>
-    public static bool NeedsRegeneration(EnvState? previous, string currentSha, bool outputExists, string fingerprint)
+    public static bool NeedsRegeneration(ContextState? previous, string currentSha, bool outputExists, string fingerprint)
     {
         if (previous is null) return true;
         if (!string.Equals(previous.CommitSha, currentSha, StringComparison.OrdinalIgnoreCase)) return true;
@@ -19,7 +19,7 @@ public static class ChangeDetector
         {
             ContextStatus.Ok => !outputExists,       // someone deleted the published file
             ContextStatus.Blocked => false,          // same commit would be blocked again; wait for a new commit
-            _ => true,                               // Pending, Failed, MissingBranch: try again
+            _ => true,                               // Pending or Failed: try again
         };
     }
 
@@ -37,7 +37,7 @@ public static class ChangeDetector
 public sealed class ChangeDebouncer(TimeSpan quietPeriod, TimeProvider time)
 {
     private readonly Dictionary<string, DateTimeOffset> _lastSignal = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Lock _lock = new();
+    private readonly object _lock = new();
 
     public void Signal(string key)
     {

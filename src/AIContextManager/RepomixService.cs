@@ -15,7 +15,7 @@ public sealed partial class RepomixService(IOptions<ContextManagerOptions> optio
         "**/.git/**", "**/.vs/**", "**/bin/**", "**/obj/**", "**/node_modules/**", "**/dist/**", "**/build/**",
         "**/coverage/**", "**/TestResults/**", "**/*.tmp", "**/*.temp", "**/*.log", "**/*.min.js", "**/*.map",
         "**/package-lock.json", "**/yarn.lock", "**/pnpm-lock.yaml",
-        "**/DEV-context.md", "**/PROD-context.md", "**/*-context.md", "**/repomix-output.*", "**/00-INDEX.md",
+        "**/*-context.md", "**/repomix-output.*", "**/00-INDEX.md",
     ];
 
     private readonly ContextManagerOptions _o = options.Value;

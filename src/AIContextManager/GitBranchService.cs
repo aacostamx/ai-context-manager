@@ -1,46 +1,45 @@
 using System.Formats.Tar;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace AIContextManager;
 
 /// <summary>
-/// Read-only access to branch content. The user's working repository is never checked out, reset, cleaned or pulled:
-///  - "git fetch" only updates remote-tracking refs (refs/remotes/origin/*), exactly like GitHub Desktop's background fetch.
-///  - "git rev-parse" resolves origin/develop and origin/main.
-///  - "git archive" streams the committed tree of a commit; we extract it with System.Formats.Tar into a temporary folder.
-/// No worktree metadata is added to the repository and uncommitted changes can never leak into a snapshot.
+/// Read-only Git access. Needs no credentials and no configuration; it never contacts GitHub.
+/// The context follows the branch you have checked out in GitHub Desktop (Current Branch dropdown):
+///  - "git rev-parse" reads the current branch and its last commit (HEAD);
+///  - "git archive" streams that commit's files and System.Formats.Tar extracts them into a temporary folder.
+/// The repository is never checked out, reset, cleaned, pulled or fetched. Uncommitted changes are not included.
 /// </summary>
-public sealed class GitBranchService(IOptions<ContextManagerOptions> options, ILogger<GitBranchService> log)
+public sealed class GitBranchService(ILogger<GitBranchService> log)
 {
-    private static readonly TimeSpan FetchTimeout = TimeSpan.FromMinutes(3);
     private static readonly TimeSpan ShortTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan ArchiveTimeout = TimeSpan.FromMinutes(5);
 
-    private readonly ContextManagerOptions _o = options.Value;
+    private string _git = "git";
 
+    /// <summary>Finds Git (PATH first, then the copy bundled with GitHub Desktop) and returns its version, or null.</summary>
     public async Task<string?> GetVersionAsync(CancellationToken ct)
     {
-        var r = await ProcessRunner.RunAsync("git", ["--version"], null, ShortTimeout, ct);
-        return r.Success ? r.StdOut.Trim() : null;
+        foreach (var candidate in GitCandidates())
+        {
+            var r = await ProcessRunner.RunAsync(candidate, ["--version"], null, ShortTimeout, ct);
+            if (!r.Success) continue;
+            _git = candidate;
+            if (candidate != "git") log.LogInformation("Git is not on PATH; using GitHub Desktop's Git: {Git}", candidate);
+            return r.StdOut.Trim();
+        }
+
+        return null;
     }
 
-    /// <summary>Updates remote-tracking refs. Returns false when the remote could not be reached.</summary>
-    public async Task<bool> FetchAsync(string repo, CancellationToken ct)
+    /// <summary>The checked-out branch ("(detached)" when none) and its commit, or null when the repository has no commits.</summary>
+    public async Task<(string Branch, string Sha)?> GetCurrentAsync(string repo, CancellationToken ct)
     {
-        var r = await Git(repo, FetchTimeout, ct, "fetch", "--quiet", "--no-tags", _o.RemoteName);
-        if (!r.Success)
-            log.LogWarning("git fetch failed for {Repo}; using last known remote refs (contexts may be stale). {Error}",
-                Path.GetFileName(repo), ProcessRunner.SafeForLog(r.StdErr));
-        return r.Success;
-    }
+        var sha = await Git(repo, ShortTimeout, ct, "rev-parse", "--verify", "--quiet", "HEAD^{commit}");
+        if (!sha.Success || sha.StdOut.Trim().Length < 40) return null;
 
-    /// <summary>Commit SHA of refs/remotes/{remote}/{branch}, or null when that branch does not exist.</summary>
-    public async Task<string?> ResolveRemoteBranchAsync(string repo, string branch, CancellationToken ct)
-    {
-        var r = await Git(repo, ShortTimeout, ct, "rev-parse", "--verify", "--quiet", $"refs/remotes/{_o.RemoteName}/{branch}^{{commit}}");
-        var sha = r.StdOut.Trim();
-        return r.Success && sha.Length >= 40 ? sha : null;
+        var branch = await Git(repo, ShortTimeout, ct, "symbolic-ref", "--short", "--quiet", "HEAD");
+        return (branch.Success ? branch.StdOut.Trim() : "(detached)", sha.StdOut.Trim());
     }
 
     /// <summary>Paths of all files in a commit (used to find GitOps files that mention a repository).</summary>
@@ -83,14 +82,30 @@ public sealed class GitBranchService(IOptions<ContextManagerOptions> options, IL
             }
         }
 
-        var r = await ProcessRunner.RunAsync("git", ["archive", "--format=tar", sha], repo, ArchiveTimeout, ct, Extract);
+        var r = await ProcessRunner.RunAsync(_git, ["archive", "--format=tar", sha], repo, ArchiveTimeout, ct, Extract);
         if (!r.Success)
             throw new InvalidOperationException($"git archive failed: {ProcessRunner.SafeForLog(r.StdErr)}");
         return (written, skipped);
     }
 
-    private static Task<ProcessResult> Git(string repo, TimeSpan timeout, CancellationToken ct, params string[] args) =>
-        ProcessRunner.RunAsync("git", ["-c", "core.quotepath=off", .. args], repo, timeout, ct);
+    private Task<ProcessResult> Git(string repo, TimeSpan timeout, CancellationToken ct, params string[] args) =>
+        ProcessRunner.RunAsync(_git, ["-c", "core.quotepath=off", .. args], repo, timeout, ct);
+
+    /// <summary>"git" on PATH, then GitHub Desktop's bundled Git (%LOCALAPPDATA%\GitHubDesktop\app-*\resources\app\git\cmd\git.exe), newest first.</summary>
+    private static IEnumerable<string> GitCandidates()
+    {
+        yield return "git";
+
+        var desktop = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GitHubDesktop");
+        if (!Directory.Exists(desktop)) yield break;
+
+        var bundled = Directory.EnumerateDirectories(desktop, "app-*")
+            .Select(dir => (Dir: dir, Version: Version.TryParse(Path.GetFileName(dir)[4..], out var v) ? v : new Version()))
+            .OrderByDescending(x => x.Version)
+            .Select(x => Path.Combine(x.Dir, "resources", "app", "git", "cmd", "git.exe"))
+            .Where(File.Exists);
+        foreach (var git in bundled) yield return git;
+    }
 }
 
 /// <summary>Files that are never copied into a snapshot, whatever the repository's ignore files say.</summary>

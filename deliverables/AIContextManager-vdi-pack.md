@@ -1,6 +1,6 @@
 # AIContextManager - VDI copy pack
 
-Create each file below at the given path (relative to a new folder `ai-context-manager`), then run `dotnet test` and `dotnet run --project src/AIContextManager -- --once`. Sample output is not included; see the README.
+Create each file below at the given path (relative to a new folder `ai-context-manager`), then run `dotnet test` and `dotnet run --project src/AIContextManager -- --once`. Targets .NET 8. Sample output is not included; see the README.
 
 Files:
 - `.gitignore`
@@ -106,21 +106,22 @@ EndGlobal
 ````markdown
 # AIContextManager
 
-A small .NET 10 console app that finds every Git repository under your `source` folder and keeps two Markdown
-contexts per repository, built with [Repomix](https://github.com/yamadashy/repomix):
+A small .NET 8 console app that finds every Git repository under your `source` folder and keeps **one** Markdown
+context per repository, built with [Repomix](https://github.com/yamadashy/repomix).
 
-- `DEV-context.md` from `origin/develop`
-- `PROD-context.md` from `origin/main`
+The context is the last commit of the branch you have checked out in GitHub Desktop. Want DEV? Pick `develop` in
+GitHub Desktop's **Current Branch** dropdown. Want PROD? Pick `main`. The context regenerates by itself within seconds.
 
-They are grouped by solution (API, UI, Sync, ...) with a navigable `00-INDEX.md`, ready to attach to GitHub Copilot,
+Contexts are grouped by solution with a navigable `00-INDEX.md`, ready to attach to GitHub Copilot,
 Microsoft 365 Copilot, Copilot Notebooks or any assistant that reads Markdown.
 
-No repository list, no scripts, no database. It only creates files; it never calls an AI service.
+No repository list, no scripts, no database, no GitHub credentials. It only creates files; it never calls an AI
+service and never contacts GitHub.
 
 ## Requirements
 
-- .NET 10 SDK (or runtime, to run a published build)
-- Git on `PATH` (Git for Windows; GitHub Desktop's bundled Git is not on `PATH`)
+- .NET 8 SDK (or runtime, to run a published build)
+- GitHub Desktop (its bundled Git is found automatically) or Git for Windows on `PATH`
 - Repomix: `npm install -g repomix` (or set `RepomixCommand` to its full path)
 
 ## Run
@@ -134,7 +135,7 @@ From a terminal:
 dotnet run --project src/AIContextManager
 ```
 
-One pass and exit (useful the first time, or from Windows Task Scheduler):
+One pass and exit:
 
 ```bash
 dotnet run --project src/AIContextManager -- --once
@@ -160,12 +161,10 @@ dotnet test
 | `ExcludedFolders` | `["Repos"]` | Folders ignored completely, with everything inside (no discovery, no watching). Relative to `SourcePath`, or absolute. |
 | `OutputPath` | `C:\Users\O7U\AI-Context` | Where contexts and `00-INDEX.md` go. Must not be inside `SourcePath`. |
 | `StagingPath` | `%LOCALAPPDATA%\AIContextManager\staging` | Local work area: snapshots, scan reports, `state.json`. Never cloud-synced. |
-| `Branches:Dev` / `Branches:Prod` | `develop` / `main` | Remote branches used for DEV and PROD. |
 | `AutoDiscover` | `true` | Pick up added/removed repositories while running. |
-| `WatchChanges` | `true` | React to Git ref updates (e.g. GitHub Desktop fetch) via `FileSystemWatcher`. |
-| `GitCheckMinutes` | `15` | Interval for `git fetch` + check of all repositories. |
+| `WatchChanges` | `true` | React to branch switches and new commits via `FileSystemWatcher`. |
+| `GitCheckMinutes` | `15` | Safety-net re-check of all repositories (no network). |
 | `DebounceSeconds` | `10` | Quiet time after file events before a check. |
-| `FetchRemote` | `true` | Run `git fetch` before checks. |
 | `RepomixCommand` | `repomix` | Name or full path of the Repomix CLI. |
 | `AllowCloudPublish` | `false` | Must be `true` to write into a OneDrive/SharePoint folder. Set only if your policy allows full source in that location. |
 | `SharedRepositories` | `[]` | Extra names to treat as shared infrastructure. |
@@ -176,8 +175,8 @@ Configuration is validated at startup; the app exits with a clear message when s
 ## How it works
 
 1. **Discovery.** Walks `SourcePath` (default depth 3) and treats a folder as a repository when it has a `.git`
-   folder with `HEAD`, or a `.git` file starting with `gitdir:` (worktrees). `bin`, `obj`, `.vs`, `node_modules`,
-   `dist`, `build` and `.git` are never traversed.
+   folder with `HEAD`, or a `.git` file starting with `gitdir:` (worktrees). `ExcludedFolders`, `bin`, `obj`, `.vs`,
+   `node_modules`, `dist`, `build` and `.git` are never traversed.
 2. **Grouping** (naming only, conservative):
    - `*gitops*`, `*-helm-chart` and `SharedRepositories` go to `Shared-Infrastructure/`.
    - Suffixes `-api`, `-ui`, `-data-api`, `-worker`, `-sync`, `-cronjob`, `-cron-job` give the component.
@@ -185,14 +184,11 @@ Configuration is validated at startup; the app exits with a clear message when s
    - A repo joins another solution only if its base is that solution plus one word
      (`intsol-sa-rules-salesforce-api` joins `intsol-sa-rules` as "Salesforce API").
    - Anything else stays its own solution. A shared text prefix alone never merges repos.
-3. **Branch content without touching your repos.** The app never runs `checkout`, `reset`, `clean` or `pull`.
-   It runs `git fetch` (updates only `refs/remotes/origin/*`, like GitHub Desktop does), resolves
-   `origin/develop` / `origin/main` with `git rev-parse`, and streams that commit with `git archive` into a temporary
-   folder in `StagingPath`. No worktrees are created and uncommitted changes can never be included.
-   - Fetch fails: the last known remote ref is used and the context is marked **STALE**.
-   - Branch missing: reported as **NO BRANCH**; no other branch is substituted.
-4. **Repomix.** One run per repository and environment, Markdown style, respecting the snapshot's `.gitignore`
-   and `.repomixignore`, plus built-in ignores (build output, lock files, logs, previously generated contexts).
+3. **Read-only Git.** The app reads the checked-out branch and its last commit (`git rev-parse HEAD`) and streams
+   that commit with `git archive` into a temporary folder in `StagingPath`. It never runs `fetch`, `pull`,
+   `checkout`, `reset` or `clean`, never creates worktrees, and uncommitted changes are never included.
+4. **Repomix.** One run per repository, Markdown style, respecting the snapshot's `.gitignore` and `.repomixignore`,
+   plus built-in ignores (build output, lock files, logs, previously generated contexts).
 5. **Security, fail-closed.**
    - Known sensitive files are never copied into the snapshot: `.env*` (except `.env.example`), `*.pfx`, `*.pem`,
      `*.key`, `id_rsa*`, `.npmrc`, `secrets.json`, `*.local.json`, `terraform.tfstate`, and similar.
@@ -200,14 +196,14 @@ Configuration is validated at startup; the app exits with a clear message when s
      hard-coded `password`/`secret`/`apiKey` values; placeholders like `#{X}#`, `${X}`, `""` are allowed).
    - Any finding **blocks** publication. The report in `StagingPath\contexts\...\*.secret-scan.txt` lists rule, file
      and line only, never the value. Fix the repository or exclude the file, then the next commit is processed.
-   - Only clean files are copied to `OutputPath`. Git URLs are stripped of credentials before logging.
+   - Only clean files are copied to `OutputPath`.
 6. **Change detection.** `state.json` remembers the commit and settings used for each context. A context is rebuilt
-   only when its branch commit changes, the settings change, or the published file was deleted. A push to `develop`
-   rebuilds only DEV. The watcher reacts to `.git/refs/remotes/*` and `packed-refs` changes and to folders
-   appearing/disappearing; editing working files does nothing (DEV/PROD are committed content).
-7. **Index.** `00-INDEX.md` shows latest successful update, per-component DEV/PROD status with commit, date and token
-   count, and GitOps files that mention the solution's repositories. A starter `ARCHITECTURE.md` is created per
-   solution only if missing; it is never overwritten.
+   only when the checked-out commit changes (branch switch, commit, pull), the settings change, or the published
+   file was deleted. The watcher reacts to `.git/HEAD`, `.git/refs/heads/*` and `packed-refs`, and to folders
+   appearing/disappearing; editing working files does nothing.
+7. **Index.** `00-INDEX.md` shows the latest successful update and, per repository, its branch, commit, date and
+   token count, plus GitOps files that mention the solution's repositories. A starter `ARCHITECTURE.md` is created
+   per solution only if missing; it is never overwritten.
 
 ## Output
 
@@ -216,10 +212,10 @@ AI-Context/
 ├── 00-INDEX.md
 ├── intsol-dna-list-matching/
 │   ├── ARCHITECTURE.md
-│   ├── API/DEV-context.md, PROD-context.md
-│   └── UI/DEV-context.md, PROD-context.md
+│   ├── intsol-dna-list-matching-api-context.md
+│   └── intsol-dna-list-matching-ui-context.md
 └── Shared-Infrastructure/
-    └── intsol-gitops/DEV-context.md, PROD-context.md
+    └── intsol-gitops-context.md
 ```
 
 See [`samples/dna`](samples/dna/00-INDEX.md) for output generated from synthetic DNA repositories.
@@ -235,8 +231,8 @@ Because contexts contain full source, the app refuses a OneDrive/SharePoint `Out
 
 - Grouping is name-based. An unusual name ends up as its own solution rather than being merged.
 - The secret scanner is pattern-based. It errs on blocking; it cannot prove a file is secret-free.
-- Repositories that are worktrees (`.git` file) are rechecked on the periodic Git check, not by the watcher.
-- No WORKING (uncommitted) context yet.
+- Repositories that are worktrees (`.git` file) are rechecked on the periodic check, not by the watcher.
+- Uncommitted changes are not included; commit (no need to push) to see them in the context.
 ````
 
 ## src/AIContextManager/AIContextManager.csproj
@@ -246,14 +242,14 @@ Because contexts contain full source, the app refuses a OneDrive/SharePoint `Out
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>AIContextManager</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.1" />
   </ItemGroup>
 
   <ItemGroup>
@@ -275,15 +271,10 @@ Because contexts contain full source, the app refuses a OneDrive/SharePoint `Out
     "SourcePath": "C:\\Users\\O7U\\source",
     "ExcludedFolders": [ "Repos" ],
     "OutputPath": "C:\\Users\\O7U\\AI-Context",
-    "Branches": {
-      "Dev": "develop",
-      "Prod": "main"
-    },
     "AutoDiscover": true,
     "WatchChanges": true,
     "GitCheckMinutes": 15,
     "DebounceSeconds": 10,
-    "FetchRemote": true,
     "RepomixCommand": "repomix",
     "AllowCloudPublish": false
   },
@@ -307,10 +298,10 @@ namespace AIContextManager;
 public static class ChangeDetector
 {
     /// <summary>
-    /// DEV/PROD contexts only depend on the commit of origin/{branch} and the generation settings,
-    /// so a context is regenerated only when one of those changed (or the published file disappeared).
+    /// A context only depends on the checked-out commit and the generation settings, so it is regenerated only
+    /// when one of those changed (new commit, pull or branch switch) or the published file disappeared.
     /// </summary>
-    public static bool NeedsRegeneration(EnvState? previous, string currentSha, bool outputExists, string fingerprint)
+    public static bool NeedsRegeneration(ContextState? previous, string currentSha, bool outputExists, string fingerprint)
     {
         if (previous is null) return true;
         if (!string.Equals(previous.CommitSha, currentSha, StringComparison.OrdinalIgnoreCase)) return true;
@@ -320,7 +311,7 @@ public static class ChangeDetector
         {
             ContextStatus.Ok => !outputExists,       // someone deleted the published file
             ContextStatus.Blocked => false,          // same commit would be blocked again; wait for a new commit
-            _ => true,                               // Pending, Failed, MissingBranch: try again
+            _ => true,                               // Pending or Failed: try again
         };
     }
 
@@ -338,7 +329,7 @@ public static class ChangeDetector
 public sealed class ChangeDebouncer(TimeSpan quietPeriod, TimeProvider time)
 {
     private readonly Dictionary<string, DateTimeOffset> _lastSignal = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Lock _lock = new();
+    private readonly object _lock = new();
 
     public void Signal(string key)
     {
@@ -368,7 +359,7 @@ using Microsoft.Extensions.Options;
 namespace AIContextManager;
 
 /// <summary>
-/// One repository + one environment: resolve commit, skip if unchanged, snapshot, Repomix, secret scan, publish.
+/// One repository: read the checked-out branch and commit, skip if unchanged, snapshot, Repomix, secret scan, publish.
 /// Everything happens in StagingPath; only a clean file is copied to OutputPath.
 /// </summary>
 public sealed class ContextGenerator(
@@ -377,52 +368,49 @@ public sealed class ContextGenerator(
     RepomixService repomix,
     ILogger<ContextGenerator> log)
 {
-    private const string FormatVersion = "2"; // bump when the output format changes to force regeneration
+    private const string FormatVersion = "3"; // bump when the output format changes to force regeneration
     private readonly ContextManagerOptions _o = options.Value;
 
     public string Fingerprint => ChangeDetector.Fingerprint([FormatVersion, .. repomix.IgnorePatterns]);
 
-    public async Task<EnvState> ProcessAsync(RepositoryInfo repo, ContextEnvironment env, bool remoteStale, EnvState? previous, CancellationToken ct)
+    public async Task<ContextState> ProcessAsync(RepositoryInfo repo, ContextState? previous, CancellationToken ct)
     {
-        var branch = _o.BranchFor(env);
-        var now = DateTimeOffset.UtcNow;
-        var label = $"{repo.Name} {env.ToString().ToUpperInvariant()} ({_o.RemoteName}/{branch})";
-
-        var sha = await git.ResolveRemoteBranchAsync(repo.RootPath, branch, ct);
-        if (sha is null)
+        var current = await git.GetCurrentAsync(repo.RootPath, ct);
+        if (current is not var (branch, sha))
         {
-            if (previous?.Status != ContextStatus.MissingBranch)
-                log.LogWarning("{Context}: branch not found. No context is generated and no other branch is used.", label);
-            return new EnvState { Branch = branch, Status = ContextStatus.MissingBranch, CheckedUtc = now, Message = $"{_o.RemoteName}/{branch} not found" };
+            if (previous?.Status != ContextStatus.Failed) log.LogWarning("{Repo}: no commits yet, nothing to generate.", repo.Name);
+            return new ContextState { Status = ContextStatus.Failed, Message = "No commits" };
         }
 
-        var publishedFile = repo.ContextFile(_o.OutputPath, env);
+        var label = $"{repo.Name} ({branch})";
+        var publishedFile = repo.ContextFile(_o.OutputPath);
         if (!ChangeDetector.NeedsRegeneration(previous, sha, File.Exists(publishedFile), Fingerprint))
         {
             log.LogDebug("{Context}: unchanged at {Sha}", label, sha[..7]);
-            return previous! with { CheckedUtc = now, RemoteStale = remoteStale };
+            return previous!;
         }
 
         log.LogInformation("{Context}: generating context for commit {Sha}", label, sha[..7]);
-        var work = Path.Combine(_o.StagingPath, "work", $"{repo.Name}-{env}");
+        var now = DateTimeOffset.UtcNow;
+        var work = Path.Combine(_o.StagingPath, "work", repo.Name);
         var snapshot = Path.Combine(work, "snapshot");
         var rawOutput = Path.Combine(work, "repomix-output.md");
-        var stagedFile = repo.ContextFile(Path.Combine(_o.StagingPath, "contexts"), env);
+        var stagedFile = repo.ContextFile(Path.Combine(_o.StagingPath, "contexts"));
         var reportFile = Path.ChangeExtension(stagedFile, ".secret-scan.txt");
+        var state = new ContextState { Branch = branch, CommitSha = sha, Fingerprint = Fingerprint };
 
         try
         {
-            var (written, skipped) = await git.ExportSnapshotAsync(repo.RootPath, sha, snapshot, ct);
-            log.LogDebug("{Context}: snapshot has {Files} files ({Skipped} sensitive files skipped)", label, written, skipped);
+            var (_, skipped) = await git.ExportSnapshotAsync(repo.RootPath, sha, snapshot, ct);
 
             var result = await repomix.RunAsync(snapshot, rawOutput, ct);
             if (!result.Success)
             {
                 log.LogError("{Context}: Repomix failed. {Error}", label, result.Error);
-                return Failed(branch, sha, now, remoteStale, result.Error ?? "Repomix failed");
+                return state with { Status = ContextStatus.Failed, Message = result.Error };
             }
 
-            var content = BuildHeader(repo, env, branch, sha, now, remoteStale, result.TotalTokens, skipped) +
+            var content = BuildHeader(repo, branch, sha, now, result.TotalTokens, skipped) +
                           await File.ReadAllTextAsync(rawOutput, ct);
             PathUtil.WriteAtomically(stagedFile, content);
 
@@ -434,11 +422,7 @@ public sealed class ContextGenerator(
                 PathUtil.WriteAtomically(reportFile, BuildReport(label, sha, findings));
                 log.LogError("{Context}: publication BLOCKED, {Count} possible secret(s) found. Locations (no values): {Report}",
                     label, findings.Count, reportFile);
-                return new EnvState
-                {
-                    Branch = branch, CommitSha = sha, Status = ContextStatus.Blocked, CheckedUtc = now, RemoteStale = remoteStale,
-                    Fingerprint = Fingerprint, Message = $"{findings.Count} possible secret(s); see {reportFile}",
-                };
+                return state with { Status = ContextStatus.Blocked, Message = $"{findings.Count} possible secret(s); see {reportFile}" };
             }
 
             if (File.Exists(reportFile)) File.Delete(reportFile);
@@ -448,16 +432,12 @@ public sealed class ContextGenerator(
 
             log.LogInformation("{Context}: published {File} ({Tokens} tokens)", label, publishedFile,
                 result.TotalTokens?.ToString("N0") ?? "unknown");
-            return new EnvState
-            {
-                Branch = branch, CommitSha = sha, Status = ContextStatus.Ok, GeneratedUtc = now, CheckedUtc = now,
-                Tokens = result.TotalTokens, RemoteStale = remoteStale, Fingerprint = Fingerprint,
-            };
+            return state with { Status = ContextStatus.Ok, GeneratedUtc = now, Tokens = result.TotalTokens };
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             log.LogError("{Context}: generation failed. {Error}", label, ProcessRunner.SafeForLog(ex.Message));
-            return Failed(branch, sha, now, remoteStale, ProcessRunner.SafeForLog(ex.Message));
+            return state with { Status = ContextStatus.Failed, Message = ProcessRunner.SafeForLog(ex.Message) };
         }
         finally
         {
@@ -465,32 +445,24 @@ public sealed class ContextGenerator(
         }
     }
 
-    private EnvState Failed(string branch, string sha, DateTimeOffset now, bool stale, string message) => new()
-    {
-        Branch = branch, CommitSha = sha, Status = ContextStatus.Failed, CheckedUtc = now, RemoteStale = stale,
-        Fingerprint = Fingerprint, Message = message,
-    };
-
-    private string BuildHeader(RepositoryInfo repo, ContextEnvironment env, string branch, string sha, DateTimeOffset now,
-        bool stale, long? tokens, int skippedSensitive)
+    private static string BuildHeader(RepositoryInfo repo, string branch, string sha, DateTimeOffset now, long? tokens, int skippedSensitive)
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"# {repo.Name} - {env.ToString().ToUpperInvariant()} context");
+        sb.AppendLine($"# {repo.Name} context ({branch})");
         sb.AppendLine();
         sb.AppendLine("| Field | Value |");
         sb.AppendLine("|---|---|");
         sb.AppendLine($"| Repository | `{repo.Name}` |");
         sb.AppendLine($"| Original path | `{repo.RootPath}` |");
         sb.AppendLine($"| Solution / component | {repo.Solution} / {repo.Component} |");
-        sb.AppendLine($"| Branch | `{_o.RemoteName}/{branch}` |");
+        sb.AppendLine($"| Branch | `{branch}` |");
         sb.AppendLine($"| Commit | `{sha}` |");
         sb.AppendLine($"| Generated (UTC) | {now:yyyy-MM-dd HH:mm:ss} |");
         sb.AppendLine($"| Repomix total tokens | {tokens?.ToString("N0") ?? "not reported"} |");
         sb.AppendLine($"| Sensitive files excluded | {skippedSensitive} |");
-        if (stale)
-            sb.AppendLine("| Freshness | **Potentially stale**: `git fetch` failed, built from the last known remote ref |");
         sb.AppendLine();
-        sb.AppendLine("> Committed content only. Uncommitted local changes are not included. Generated by AIContextManager; do not edit.");
+        sb.AppendLine("> Last commit of the branch checked out in GitHub Desktop. Uncommitted changes are not included. " +
+                      "Generated by AIContextManager; do not edit.");
         sb.AppendLine();
         sb.AppendLine("---");
         sb.AppendLine();
@@ -530,24 +502,17 @@ public sealed class ContextManagerOptions
     /// <summary>Local working area (snapshots, raw Repomix output, state). Defaults to %LOCALAPPDATA%\AIContextManager\staging.</summary>
     public string StagingPath { get; set; } = "";
 
-    public BranchOptions Branches { get; set; } = new();
-
     /// <summary>Re-scan SourcePath when folders are added or removed. When false, repositories are discovered once at startup.</summary>
     public bool AutoDiscover { get; set; } = true;
 
     /// <summary>Use FileSystemWatcher to react to new repositories and Git reference updates.</summary>
     public bool WatchChanges { get; set; } = true;
 
-    /// <summary>Minutes between "git fetch" + reference checks for all repositories.</summary>
+    /// <summary>Minutes between checks of the local origin/develop and origin/main refs of all repositories (no network).</summary>
     public int GitCheckMinutes { get; set; } = 15;
 
     /// <summary>Quiet period after the last file-system event before a repository is checked.</summary>
     public int DebounceSeconds { get; set; } = 10;
-
-    /// <summary>Run "git fetch" before checking references. When false only existing remote-tracking refs are used.</summary>
-    public bool FetchRemote { get; set; } = true;
-
-    public string RemoteName { get; set; } = "origin";
 
     /// <summary>Repomix executable name or full path.</summary>
     public string RepomixCommand { get; set; } = "repomix";
@@ -575,18 +540,10 @@ public sealed class ContextManagerOptions
     /// </summary>
     public string[] ExcludedFolders { get; set; } = [];
 
-    public string BranchFor(ContextEnvironment env) => env == ContextEnvironment.Dev ? Branches.Dev : Branches.Prod;
-
     /// <summary>True when <paramref name="fullPath"/> is one of the ExcludedFolders or inside one.</summary>
     public bool IsExcluded(string fullPath) =>
         ExcludedFolders.Any(f => !string.IsNullOrWhiteSpace(f) &&
                                  PathUtil.IsSameOrUnder(fullPath, Path.IsPathRooted(f) ? f : Path.Combine(SourcePath, f)));
-}
-
-public sealed class BranchOptions
-{
-    public string Dev { get; set; } = "develop";
-    public string Prod { get; set; } = "main";
 }
 
 public sealed class ContextManagerOptionsSetup : IPostConfigureOptions<ContextManagerOptions>
@@ -636,11 +593,6 @@ public sealed class ContextManagerOptionsValidator : IValidateOptions<ContextMan
                            "'AllowCloudPublish' is true. Set it only if your corporate policy permits it.");
         }
 
-        if (!IsValidRefName(o.Branches.Dev)) errors.Add("Branches:Dev is not a valid branch name.");
-        if (!IsValidRefName(o.Branches.Prod)) errors.Add("Branches:Prod is not a valid branch name.");
-        if (string.Equals(o.Branches.Dev, o.Branches.Prod, StringComparison.OrdinalIgnoreCase))
-            errors.Add("Branches:Dev and Branches:Prod must be different.");
-        if (!IsValidRefName(o.RemoteName)) errors.Add("RemoteName is not valid.");
         if (o.GitCheckMinutes < 1) errors.Add("GitCheckMinutes must be at least 1.");
         if (o.DebounceSeconds < 1) errors.Add("DebounceSeconds must be at least 1.");
         if (o.RepomixTimeoutMinutes < 1) errors.Add("RepomixTimeoutMinutes must be at least 1.");
@@ -649,10 +601,6 @@ public sealed class ContextManagerOptionsValidator : IValidateOptions<ContextMan
 
         return errors.Count == 0 ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(errors);
     }
-
-    private static bool IsValidRefName(string? b) =>
-        !string.IsNullOrWhiteSpace(b) && !b.StartsWith('-') && !b.Contains("..") &&
-        b.All(c => char.IsLetterOrDigit(c) || c is '-' or '_' or '.' or '/');
 }
 ````
 
@@ -669,11 +617,11 @@ public sealed record RunMode(bool Once);
 
 /// <summary>
 /// Main loop:
-///  - startup: discover, fetch, generate what changed, write the index;
-///  - FileSystemWatcher: new/removed repositories and updated remote refs (e.g. after GitHub Desktop fetches) are debounced
-///    and checked without fetching;
-///  - every GitCheckMinutes: fetch + check all repositories.
-/// Working-tree edits are ignored on purpose: DEV/PROD contain committed remote content only.
+///  - startup: discover, generate what changed, write the index;
+///  - FileSystemWatcher: new/removed repositories, branch switches and new commits are debounced and checked;
+///  - every GitCheckMinutes: check all repositories (safety net for missed events).
+/// One context per repository: the last commit of the branch checked out in GitHub Desktop.
+/// This service never contacts GitHub. Working-tree edits are ignored on purpose.
 /// </summary>
 public sealed class ContextMonitorService(
     IOptions<ContextManagerOptions> options,
@@ -709,7 +657,7 @@ public sealed class ContextMonitorService(
 
             state.Load();
             Discover();
-            await ProcessAsync(_repos, fetch: _o.FetchRemote, ct);
+            await ProcessAsync(_repos, ct);
 
             if (mode.Once)
             {
@@ -719,7 +667,7 @@ public sealed class ContextMonitorService(
             }
 
             if (_o.WatchChanges) StartWatcher();
-            log.LogInformation("Monitoring {Source}. Git check every {Minutes} min{Watch}. Press Ctrl+C to stop.",
+            log.LogInformation("Monitoring {Source}. Local ref check every {Minutes} min{Watch}. Press Ctrl+C to stop.",
                 _o.SourcePath, _o.GitCheckMinutes, _o.WatchChanges ? ", file watcher on" : "");
 
             var nextGitCheck = DateTimeOffset.UtcNow.AddMinutes(_o.GitCheckMinutes);
@@ -733,15 +681,15 @@ public sealed class ContextMonitorService(
                     var before = _repos.Select(r => r.RootPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
                     Discover();
                     var added = _repos.Where(r => !before.Contains(r.RootPath)).ToList();
-                    await ProcessAsync(added, fetch: _o.FetchRemote, ct, forceIndex: true);
+                    await ProcessAsync(added, ct, forceIndex: true);
                 }
 
                 var changed = _repos.Where(r => ready.Contains(r.RootPath)).ToList();
-                if (changed.Count > 0) await ProcessAsync(changed, fetch: false, ct);
+                if (changed.Count > 0) await ProcessAsync(changed, ct);
 
                 if (DateTimeOffset.UtcNow >= nextGitCheck)
                 {
-                    await ProcessAsync(_repos, fetch: _o.FetchRemote, ct);
+                    await ProcessAsync(_repos, ct);
                     nextGitCheck = DateTimeOffset.UtcNow.AddMinutes(_o.GitCheckMinutes);
                 }
             }
@@ -768,7 +716,7 @@ public sealed class ContextMonitorService(
         var gitVersion = await git.GetVersionAsync(ct);
         if (gitVersion is null)
         {
-            log.LogCritical("Git was not found on PATH. Install Git for Windows (GitHub Desktop's bundled Git is not on PATH).");
+            log.LogCritical("Git was not found: not on PATH and no GitHub Desktop installation in %LOCALAPPDATA%\\GitHubDesktop.");
             return false;
         }
 
@@ -795,7 +743,7 @@ public sealed class ContextMonitorService(
         if (previous.Count == 0)
         {
             foreach (var r in _repos)
-                log.LogInformation("Found {Repo} -> {Folder}", r.Name, r.OutputFolder);
+                log.LogInformation("Found {Repo} -> {File}", r.Name, r.RelativeContextFile);
         }
         else
         {
@@ -804,24 +752,16 @@ public sealed class ContextMonitorService(
         }
     }
 
-    private async Task ProcessAsync(IReadOnlyList<RepositoryInfo> repos, bool fetch, CancellationToken ct, bool forceIndex = false)
+    private async Task ProcessAsync(IReadOnlyList<RepositoryInfo> repos, CancellationToken ct, bool forceIndex = false)
     {
         var changed = forceIndex;
         foreach (var repo in repos)
         {
             ct.ThrowIfCancellationRequested();
-            bool stale;
-            if (fetch) stale = !await git.FetchAsync(repo.RootPath, ct);
-            else stale = state.Get(repo, ContextEnvironment.Dev)?.RemoteStale ?? false;
-
-            foreach (var env in new[] { ContextEnvironment.Dev, ContextEnvironment.Prod })
-            {
-                var before = state.Get(repo, env);
-                var after = await generator.ProcessAsync(repo, env, stale, before, ct);
-                state.Set(repo, env, after);
-                changed |= before is null || before.CommitSha != after.CommitSha || before.Status != after.Status ||
-                           before.RemoteStale != after.RemoteStale || before.GeneratedUtc != after.GeneratedUtc;
-            }
+            var before = state.Get(repo);
+            var after = await generator.ProcessAsync(repo, before, ct);
+            state.Set(repo, after);
+            changed |= before != after;
         }
 
         state.Save();
@@ -829,13 +769,13 @@ public sealed class ContextMonitorService(
             index.Write(_repos, await FindDeploymentFilesAsync(ct));
     }
 
-    /// <summary>For each solution, GitOps files (DEV branch) whose path mentions one of its repositories.</summary>
+    /// <summary>For each solution, GitOps files (checked-out branch) whose path mentions one of its repositories.</summary>
     private async Task<IReadOnlyDictionary<string, IReadOnlyList<string>>> FindDeploymentFilesAsync(CancellationToken ct)
     {
         var allFiles = new List<string>();
         foreach (var gitops in _repos.Where(r => r.IsShared && r.Name.Contains("gitops", StringComparison.OrdinalIgnoreCase)))
         {
-            var sha = state.Get(gitops, ContextEnvironment.Dev)?.CommitSha;
+            var sha = state.Get(gitops)?.CommitSha;
             if (sha is null) continue;
             if (!_gitOpsFilesCache.TryGetValue(sha, out var files))
                 _gitOpsFilesCache[sha] = files = await git.ListFilesAsync(gitops.RootPath, sha, ct);
@@ -903,8 +843,10 @@ public sealed class ContextMonitorService(
             return;
         }
 
-        // Only remote-tracking refs matter for DEV/PROD. Working-tree edits are ignored.
-        if (inRepo.StartsWith(".git/refs/remotes/", StringComparison.OrdinalIgnoreCase) ||
+        // Branch switch (.git/HEAD) or new commit/pull on a local branch (refs/heads, packed-refs).
+        // Working-tree edits are ignored: the context is the last commit.
+        if (inRepo.Equals(".git/HEAD", StringComparison.OrdinalIgnoreCase) ||
+            inRepo.StartsWith(".git/refs/heads/", StringComparison.OrdinalIgnoreCase) ||
             inRepo.Equals(".git/packed-refs", StringComparison.OrdinalIgnoreCase))
             _debouncer.Signal(repo.RootPath);
     }
@@ -916,47 +858,46 @@ public sealed class ContextMonitorService(
 ````csharp
 using System.Formats.Tar;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace AIContextManager;
 
 /// <summary>
-/// Read-only access to branch content. The user's working repository is never checked out, reset, cleaned or pulled:
-///  - "git fetch" only updates remote-tracking refs (refs/remotes/origin/*), exactly like GitHub Desktop's background fetch.
-///  - "git rev-parse" resolves origin/develop and origin/main.
-///  - "git archive" streams the committed tree of a commit; we extract it with System.Formats.Tar into a temporary folder.
-/// No worktree metadata is added to the repository and uncommitted changes can never leak into a snapshot.
+/// Read-only Git access. Needs no credentials and no configuration; it never contacts GitHub.
+/// The context follows the branch you have checked out in GitHub Desktop (Current Branch dropdown):
+///  - "git rev-parse" reads the current branch and its last commit (HEAD);
+///  - "git archive" streams that commit's files and System.Formats.Tar extracts them into a temporary folder.
+/// The repository is never checked out, reset, cleaned, pulled or fetched. Uncommitted changes are not included.
 /// </summary>
-public sealed class GitBranchService(IOptions<ContextManagerOptions> options, ILogger<GitBranchService> log)
+public sealed class GitBranchService(ILogger<GitBranchService> log)
 {
-    private static readonly TimeSpan FetchTimeout = TimeSpan.FromMinutes(3);
     private static readonly TimeSpan ShortTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan ArchiveTimeout = TimeSpan.FromMinutes(5);
 
-    private readonly ContextManagerOptions _o = options.Value;
+    private string _git = "git";
 
+    /// <summary>Finds Git (PATH first, then the copy bundled with GitHub Desktop) and returns its version, or null.</summary>
     public async Task<string?> GetVersionAsync(CancellationToken ct)
     {
-        var r = await ProcessRunner.RunAsync("git", ["--version"], null, ShortTimeout, ct);
-        return r.Success ? r.StdOut.Trim() : null;
+        foreach (var candidate in GitCandidates())
+        {
+            var r = await ProcessRunner.RunAsync(candidate, ["--version"], null, ShortTimeout, ct);
+            if (!r.Success) continue;
+            _git = candidate;
+            if (candidate != "git") log.LogInformation("Git is not on PATH; using GitHub Desktop's Git: {Git}", candidate);
+            return r.StdOut.Trim();
+        }
+
+        return null;
     }
 
-    /// <summary>Updates remote-tracking refs. Returns false when the remote could not be reached.</summary>
-    public async Task<bool> FetchAsync(string repo, CancellationToken ct)
+    /// <summary>The checked-out branch ("(detached)" when none) and its commit, or null when the repository has no commits.</summary>
+    public async Task<(string Branch, string Sha)?> GetCurrentAsync(string repo, CancellationToken ct)
     {
-        var r = await Git(repo, FetchTimeout, ct, "fetch", "--quiet", "--no-tags", _o.RemoteName);
-        if (!r.Success)
-            log.LogWarning("git fetch failed for {Repo}; using last known remote refs (contexts may be stale). {Error}",
-                Path.GetFileName(repo), ProcessRunner.SafeForLog(r.StdErr));
-        return r.Success;
-    }
+        var sha = await Git(repo, ShortTimeout, ct, "rev-parse", "--verify", "--quiet", "HEAD^{commit}");
+        if (!sha.Success || sha.StdOut.Trim().Length < 40) return null;
 
-    /// <summary>Commit SHA of refs/remotes/{remote}/{branch}, or null when that branch does not exist.</summary>
-    public async Task<string?> ResolveRemoteBranchAsync(string repo, string branch, CancellationToken ct)
-    {
-        var r = await Git(repo, ShortTimeout, ct, "rev-parse", "--verify", "--quiet", $"refs/remotes/{_o.RemoteName}/{branch}^{{commit}}");
-        var sha = r.StdOut.Trim();
-        return r.Success && sha.Length >= 40 ? sha : null;
+        var branch = await Git(repo, ShortTimeout, ct, "symbolic-ref", "--short", "--quiet", "HEAD");
+        return (branch.Success ? branch.StdOut.Trim() : "(detached)", sha.StdOut.Trim());
     }
 
     /// <summary>Paths of all files in a commit (used to find GitOps files that mention a repository).</summary>
@@ -999,14 +940,30 @@ public sealed class GitBranchService(IOptions<ContextManagerOptions> options, IL
             }
         }
 
-        var r = await ProcessRunner.RunAsync("git", ["archive", "--format=tar", sha], repo, ArchiveTimeout, ct, Extract);
+        var r = await ProcessRunner.RunAsync(_git, ["archive", "--format=tar", sha], repo, ArchiveTimeout, ct, Extract);
         if (!r.Success)
             throw new InvalidOperationException($"git archive failed: {ProcessRunner.SafeForLog(r.StdErr)}");
         return (written, skipped);
     }
 
-    private static Task<ProcessResult> Git(string repo, TimeSpan timeout, CancellationToken ct, params string[] args) =>
-        ProcessRunner.RunAsync("git", ["-c", "core.quotepath=off", .. args], repo, timeout, ct);
+    private Task<ProcessResult> Git(string repo, TimeSpan timeout, CancellationToken ct, params string[] args) =>
+        ProcessRunner.RunAsync(_git, ["-c", "core.quotepath=off", .. args], repo, timeout, ct);
+
+    /// <summary>"git" on PATH, then GitHub Desktop's bundled Git (%LOCALAPPDATA%\GitHubDesktop\app-*\resources\app\git\cmd\git.exe), newest first.</summary>
+    private static IEnumerable<string> GitCandidates()
+    {
+        yield return "git";
+
+        var desktop = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GitHubDesktop");
+        if (!Directory.Exists(desktop)) yield break;
+
+        var bundled = Directory.EnumerateDirectories(desktop, "app-*")
+            .Select(dir => (Dir: dir, Version: Version.TryParse(Path.GetFileName(dir)[4..], out var v) ? v : new Version()))
+            .OrderByDescending(x => x.Version)
+            .Select(x => Path.Combine(x.Dir, "resources", "app", "git", "cmd", "git.exe"))
+            .Where(File.Exists);
+        foreach (var git in bundled) yield return git;
+    }
 }
 
 /// <summary>Files that are never copied into a snapshot, whatever the repository's ignore files say.</summary>
@@ -1061,18 +1018,16 @@ public sealed class IndexWriter(IOptions<ContextManagerOptions> options, StateSt
     public void Write(IReadOnlyList<RepositoryInfo> repos, IReadOnlyDictionary<string, IReadOnlyList<string>> deploymentFiles)
     {
         var sb = new StringBuilder();
-        var all = repos.SelectMany(r => new[] { state.Get(r, ContextEnvironment.Dev), state.Get(r, ContextEnvironment.Prod) }).ToList();
-        var lastOk = all.Where(s => s?.Status == ContextStatus.Ok).Max(s => s!.GeneratedUtc);
+        var lastOk = repos.Select(state.Get).Where(s => s?.Status == ContextStatus.Ok).Max(s => s!.GeneratedUtc);
 
         sb.AppendLine("# AI Context Index");
         sb.AppendLine();
         sb.AppendLine($"- Latest successful update: **{(lastOk is { } t ? $"{t:yyyy-MM-dd HH:mm} UTC" : "none yet")}**");
-        sb.AppendLine($"- Index written: {DateTimeOffset.UtcNow:yyyy-MM-dd HH:mm} UTC");
-        sb.AppendLine($"- DEV = `{_o.RemoteName}/{_o.Branches.Dev}`, PROD = `{_o.RemoteName}/{_o.Branches.Prod}` (committed content only)");
         sb.AppendLine($"- Repositories: {repos.Count}");
+        sb.AppendLine("- Each context is the last commit of the branch checked out in GitHub Desktop (see the Branch column).");
         sb.AppendLine();
-        sb.AppendLine("Status: **OK** published · **STALE** fetch failed, built from last known ref · **NO BRANCH** branch does not exist · " +
-                      "**BLOCKED** possible secrets, not published · **FAILED** generation error · **PENDING** not processed yet");
+        sb.AppendLine("Status: **OK** published · **BLOCKED** possible secrets, not published · **FAILED** generation error · " +
+                      "**PENDING** not processed yet");
         sb.AppendLine();
 
         foreach (var solution in repos.Where(r => !r.IsShared).GroupBy(r => r.Solution, StringComparer.OrdinalIgnoreCase))
@@ -1082,11 +1037,11 @@ public sealed class IndexWriter(IOptions<ContextManagerOptions> options, StateSt
             sb.AppendLine();
             sb.AppendLine($"[ARCHITECTURE.md]({PathUtil.MarkdownLink($"{solution.Key}/ARCHITECTURE.md")}) (maintained by you)");
             sb.AppendLine();
-            AppendTable(sb, "Component", solution, r => r.Component);
+            AppendTable(sb, solution);
 
             if (deploymentFiles.TryGetValue(solution.Key, out var files) && files.Count > 0)
             {
-                sb.AppendLine("Deployment configuration in GitOps (DEV branch, see Shared-Infrastructure):");
+                sb.AppendLine("Deployment configuration in GitOps (see Shared-Infrastructure):");
                 sb.AppendLine();
                 foreach (var f in files) sb.AppendLine($"- `{f}`");
                 sb.AppendLine();
@@ -1098,41 +1053,36 @@ public sealed class IndexWriter(IOptions<ContextManagerOptions> options, StateSt
         {
             sb.AppendLine($"## {RepositoryInfo.SharedSolution}");
             sb.AppendLine();
-            AppendTable(sb, "Repository", shared, null);
+            AppendTable(sb, shared);
         }
 
         PathUtil.WriteAtomically(Path.Combine(_o.OutputPath, IndexFileName), sb.ToString());
     }
 
-    /// <param name="name">Optional first column (component name); null for a plain repository table.</param>
-    private void AppendTable(StringBuilder sb, string firstColumn, IEnumerable<RepositoryInfo> repos, Func<RepositoryInfo, string>? name)
+    private void AppendTable(StringBuilder sb, IEnumerable<RepositoryInfo> repos)
     {
-        var lead = name is null ? "" : $"| {firstColumn} ";
-        sb.AppendLine($"{lead}| Repository | DEV ({_o.Branches.Dev}) | PROD ({_o.Branches.Prod}) |");
-        sb.AppendLine(name is null ? "|---|---|---|" : "|---|---|---|---|");
+        sb.AppendLine("| Component | Repository | Branch | Context |");
+        sb.AppendLine("|---|---|---|---|");
         foreach (var r in repos)
         {
-            var first = name is null ? "" : $"| {name(r)} ";
-            sb.AppendLine($"{first}| `{r.Name}` | {Cell(r, ContextEnvironment.Dev)} | {Cell(r, ContextEnvironment.Prod)} |");
+            var s = state.Get(r);
+            sb.AppendLine($"| {r.Component} | `{r.Name}` | {(string.IsNullOrEmpty(s?.Branch) ? "" : $"`{s.Branch}`")} | {Cell(r, s)} |");
         }
 
         sb.AppendLine();
     }
 
-    private string Cell(RepositoryInfo repo, ContextEnvironment env)
+    private string Cell(RepositoryInfo repo, ContextState? s)
     {
-        var s = state.Get(repo, env);
-        var link = PathUtil.MarkdownLink($"{repo.OutputFolder}/{RepositoryInfo.ContextFileName(env)}");
-        var published = File.Exists(repo.ContextFile(_o.OutputPath, env));
-        var previous = published ? $" ([previous]({link}))" : "";
+        var link = PathUtil.MarkdownLink(repo.RelativeContextFile);
+        var previous = File.Exists(repo.ContextFile(_o.OutputPath)) ? $" ([previous]({link}))" : "";
+        var sha = s?.CommitSha is { Length: >= 7 } c ? c[..7] : "";
 
         return s?.Status switch
         {
-            ContextStatus.Ok => $"[{(s.RemoteStale ? "STALE" : "OK")} `{s.CommitSha?[..7]}`]({link}) {s.GeneratedUtc:yyyy-MM-dd HH:mm}" +
-                                (s.Tokens is { } t ? $" · {t:N0} tokens" : ""),
-            ContextStatus.MissingBranch => "NO BRANCH",
-            ContextStatus.Blocked => $"BLOCKED `{s.CommitSha?[..7]}`{previous}",
-            ContextStatus.Failed => $"FAILED `{s.CommitSha?[..7]}`{previous}",
+            ContextStatus.Ok => $"[OK `{sha}`]({link}) {s.GeneratedUtc:yyyy-MM-dd HH:mm}" + (s.Tokens is { } t ? $" · {t:N0} tokens" : ""),
+            ContextStatus.Blocked => $"BLOCKED `{sha}`{previous}",
+            ContextStatus.Failed => $"FAILED {s.Message}{previous}",
             _ => "PENDING",
         };
     }
@@ -1150,8 +1100,7 @@ public sealed class IndexWriter(IOptions<ContextManagerOptions> options, StateSt
         sb.AppendLine("## Components");
         sb.AppendLine();
         foreach (var c in components)
-            sb.AppendLine($"- **{c.Component}** (`{c.Name}`): [DEV]({PathUtil.MarkdownLink($"{c.ComponentFolder}/DEV-context.md")}) · " +
-                          $"[PROD]({PathUtil.MarkdownLink($"{c.ComponentFolder}/PROD-context.md")})");
+            sb.AppendLine($"- **{c.Component}**: [{c.Name}]({PathUtil.MarkdownLink($"{c.Name}-context.md")})");
         sb.AppendLine();
         sb.AppendLine("## How the components talk to each other");
         sb.AppendLine();
@@ -1168,53 +1117,36 @@ using System.Text.Json.Serialization;
 
 namespace AIContextManager;
 
-public enum ContextEnvironment { Dev, Prod }
-
 [JsonConverter(typeof(JsonStringEnumConverter<ContextStatus>))]
 public enum ContextStatus
 {
     Pending,
     Ok,
-    MissingBranch,
     Blocked,
     Failed,
 }
 
 /// <summary>A discovered repository and where it belongs in the output tree.</summary>
-public sealed record RepositoryInfo(
-    string Name,
-    string RootPath,
-    string Solution,
-    string Component,
-    string ComponentFolder,
-    bool IsShared)
+public sealed record RepositoryInfo(string Name, string RootPath, string Solution, string Component, bool IsShared)
 {
     public const string SharedSolution = "Shared-Infrastructure";
 
-    /// <summary>Output folder relative to OutputPath, for example "intsol-dna-list-matching/API".</summary>
-    public string OutputFolder => IsShared ? $"{SharedSolution}/{Name}" : $"{Solution}/{ComponentFolder}";
+    /// <summary>Context file relative to OutputPath, for example "intsol-dna-list-matching/intsol-dna-list-matching-api-context.md".</summary>
+    public string RelativeContextFile => $"{(IsShared ? SharedSolution : Solution)}/{Name}-context.md";
 
-    /// <summary>Full path of this repository's context file below <paramref name="root"/> (OutputPath or staging).</summary>
-    public string ContextFile(string root, ContextEnvironment env) =>
-        Path.Combine(root, OutputFolder.Replace('/', Path.DirectorySeparatorChar), ContextFileName(env));
-
-    public static string ContextFileName(ContextEnvironment env) =>
-        env == ContextEnvironment.Dev ? "DEV-context.md" : "PROD-context.md";
+    /// <summary>Full path of the context file below <paramref name="root"/> (OutputPath or staging).</summary>
+    public string ContextFile(string root) => Path.Combine(root, RelativeContextFile.Replace('/', Path.DirectorySeparatorChar));
 }
 
-/// <summary>What we know about one repository + environment. Persisted in state.json.</summary>
-public sealed record EnvState
+/// <summary>What we know about a repository's context. Persisted in state.json.</summary>
+public sealed record ContextState
 {
     public string Branch { get; init; } = "";
     public string? CommitSha { get; init; }
     public ContextStatus Status { get; init; } = ContextStatus.Pending;
     public string? Message { get; init; }
     public DateTimeOffset? GeneratedUtc { get; init; }
-    public DateTimeOffset? CheckedUtc { get; init; }
     public long? Tokens { get; init; }
-
-    /// <summary>True when the last "git fetch" failed, so the remote-tracking ref may be behind the server.</summary>
-    public bool RemoteStale { get; init; }
 
     /// <summary>Hash of the generation settings; a change forces regeneration.</summary>
     public string? Fingerprint { get; init; }
@@ -1464,7 +1396,7 @@ public sealed partial class RepomixService(IOptions<ContextManagerOptions> optio
         "**/.git/**", "**/.vs/**", "**/bin/**", "**/obj/**", "**/node_modules/**", "**/dist/**", "**/build/**",
         "**/coverage/**", "**/TestResults/**", "**/*.tmp", "**/*.temp", "**/*.log", "**/*.min.js", "**/*.map",
         "**/package-lock.json", "**/yarn.lock", "**/pnpm-lock.yaml",
-        "**/DEV-context.md", "**/PROD-context.md", "**/*-context.md", "**/repomix-output.*", "**/00-INDEX.md",
+        "**/*-context.md", "**/repomix-output.*", "**/00-INDEX.md",
     ];
 
     private readonly ContextManagerOptions _o = options.Value;
@@ -1699,13 +1631,13 @@ public sealed class RepositoryGroupingService(IOptions<ContextManagerOptions> op
         {
             if (p.Shared)
             {
-                result.Add(new RepositoryInfo(p.Name, p.Path, RepositoryInfo.SharedSolution, p.Name, p.Name, true));
+                result.Add(new RepositoryInfo(p.Name, p.Path, RepositoryInfo.SharedSolution, p.Name, true));
                 continue;
             }
 
             if (p.Split is not { } split)
             {
-                result.Add(new RepositoryInfo(p.Name, p.Path, p.Name, "Main", "Main", false));
+                result.Add(new RepositoryInfo(p.Name, p.Path, p.Name, "Main", false));
                 continue;
             }
 
@@ -1726,16 +1658,7 @@ public sealed class RepositoryGroupingService(IOptions<ContextManagerOptions> op
                 }
             }
 
-            result.Add(new RepositoryInfo(p.Name, p.Path, solution, component, component.Replace(' ', '-'), false));
-        }
-
-        // Two repositories mapping to the same folder (e.g. x-cronjob and x-cron-job): fall back to the repo name.
-        foreach (var clash in result.Where(r => !r.IsShared)
-                     .GroupBy(r => r.OutputFolder, StringComparer.OrdinalIgnoreCase)
-                     .Where(g => g.Count() > 1)
-                     .SelectMany(g => g).ToList())
-        {
-            result[result.IndexOf(clash)] = clash with { Component = clash.Name, ComponentFolder = clash.Name };
+            result.Add(new RepositoryInfo(p.Name, p.Path, solution, component, false));
         }
 
         return result
@@ -1880,14 +1803,12 @@ using Microsoft.Extensions.Options;
 
 namespace AIContextManager;
 
-/// <summary>Remembers the last processed commit per repository/environment in StagingPath\state.json.</summary>
+/// <summary>Remembers the last processed branch/commit per repository in StagingPath\state.json.</summary>
 public sealed class StateStore(IOptions<ContextManagerOptions> options, ILogger<StateStore> log)
 {
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
     private readonly string _file = Path.Combine(options.Value.StagingPath, "state.json");
-    private Dictionary<string, EnvState> _states = new(StringComparer.OrdinalIgnoreCase);
-
-    public static string Key(RepositoryInfo repo, ContextEnvironment env) => $"{repo.RootPath}|{env}";
+    private Dictionary<string, ContextState> _states = new(StringComparer.OrdinalIgnoreCase);
 
     public void Load()
     {
@@ -1895,8 +1816,8 @@ public sealed class StateStore(IOptions<ContextManagerOptions> options, ILogger<
         {
             if (File.Exists(_file))
             {
-                var loaded = JsonSerializer.Deserialize<Dictionary<string, EnvState>>(File.ReadAllText(_file), Json);
-                _states = new Dictionary<string, EnvState>(loaded ?? [], StringComparer.OrdinalIgnoreCase);
+                var loaded = JsonSerializer.Deserialize<Dictionary<string, ContextState>>(File.ReadAllText(_file), Json);
+                _states = new Dictionary<string, ContextState>(loaded ?? [], StringComparer.OrdinalIgnoreCase);
             }
         }
         catch (Exception ex) when (ex is JsonException or IOException)
@@ -1906,9 +1827,9 @@ public sealed class StateStore(IOptions<ContextManagerOptions> options, ILogger<
         }
     }
 
-    public EnvState? Get(RepositoryInfo repo, ContextEnvironment env) => _states.GetValueOrDefault(Key(repo, env));
+    public ContextState? Get(RepositoryInfo repo) => _states.GetValueOrDefault(repo.RootPath);
 
-    public void Set(RepositoryInfo repo, ContextEnvironment env, EnvState state) => _states[Key(repo, env)] = state;
+    public void Set(RepositoryInfo repo, ContextState state) => _states[repo.RootPath] = state;
 
     public void Save() => PathUtil.WriteAtomically(_file, JsonSerializer.Serialize(_states, Json));
 }
@@ -1920,7 +1841,7 @@ public sealed class StateStore(IOptions<ContextManagerOptions> options, ILogger<
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
@@ -1956,7 +1877,7 @@ public class ChangeDetectionTests
     private const string ShaB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     private const string Fp = "fp1";
 
-    private static EnvState Ok(string sha) => new() { CommitSha = sha, Status = ContextStatus.Ok, Fingerprint = Fp };
+    private static ContextState Ok(string sha) => new() { CommitSha = sha, Status = ContextStatus.Ok, Fingerprint = Fp };
 
     [Fact]
     public void First_time_is_generated() =>
@@ -2049,7 +1970,7 @@ public class GitAndDiscoveryTests : IDisposable
         StagingPath = Path.Combine(_repos.Root, "staging"),
     };
 
-    private GitBranchService Git() => new(Microsoft.Extensions.Options.Options.Create(Options()), NullLogger<GitBranchService>.Instance);
+    private static GitBranchService Git() => new(NullLogger<GitBranchService>.Instance);
 
     private RepositoryDiscoveryService Discovery() =>
         new(Microsoft.Extensions.Options.Options.Create(Options()), NullLogger<RepositoryDiscoveryService>.Instance);
@@ -2109,62 +2030,60 @@ public class GitAndDiscoveryTests : IDisposable
     }
 
     [Fact]
-    public async Task Snapshot_reads_remote_branches_without_touching_the_working_repository()
+    public async Task Snapshot_is_last_commit_of_checked_out_branch_and_repo_is_untouched()
     {
-        var clone = _repos.CreateRepository("intsol-dna-list-matching-api");
+        var clone = _repos.CreateRepository("intsol-dna-list-matching-api"); // checked out on feature/my-work (from main)
         File.WriteAllText(Path.Combine(clone, "Program.cs"), "// uncommitted local edit\n");
         var statusBefore = TestRepos.Git(clone, "status", "--porcelain");
-        var headBefore = TestRepos.Git(clone, "rev-parse", "--abbrev-ref", "HEAD");
         var git = Git();
 
-        Assert.True(await git.FetchAsync(clone, CancellationToken.None));
-        var dev = await git.ResolveRemoteBranchAsync(clone, "develop", CancellationToken.None);
-        var prod = await git.ResolveRemoteBranchAsync(clone, "main", CancellationToken.None);
-        Assert.NotNull(dev);
-        Assert.NotNull(prod);
-        Assert.NotEqual(dev, prod);
+        var current = await git.GetCurrentAsync(clone, CancellationToken.None);
+        Assert.NotNull(current);
+        Assert.Equal("feature/my-work", current.Value.Branch);
 
         var target = Path.Combine(_repos.Root, "snap");
-        var (written, skipped) = await git.ExportSnapshotAsync(clone, dev!, target, CancellationToken.None);
+        var (written, skipped) = await git.ExportSnapshotAsync(clone, current.Value.Sha, target, CancellationToken.None);
 
-        Assert.Equal("Console.WriteLine(\"develop\");", File.ReadAllText(Path.Combine(target, "Program.cs")).TrimEnd()); // autocrlf may apply
+        // Committed content only (uncommitted edit not included), .env never copied.
+        Assert.Equal("Console.WriteLine(\"main\");", File.ReadAllText(Path.Combine(target, "Program.cs")).TrimEnd()); // autocrlf may apply
         Assert.False(File.Exists(Path.Combine(target, ".env")), ".env must never be copied");
         Assert.Equal(1, skipped);
         Assert.Equal(2, written);
 
         // The user's repository is exactly as before: same branch, same uncommitted change, no worktrees added.
-        Assert.Equal(headBefore, TestRepos.Git(clone, "rev-parse", "--abbrev-ref", "HEAD"));
+        Assert.Equal("feature/my-work", TestRepos.Git(clone, "rev-parse", "--abbrev-ref", "HEAD"));
         Assert.Equal(statusBefore, TestRepos.Git(clone, "status", "--porcelain"));
         Assert.Equal("// uncommitted local edit\n", File.ReadAllText(Path.Combine(clone, "Program.cs")));
         Assert.Single(TestRepos.Git(clone, "worktree", "list").Split('\n'));
     }
 
     [Fact]
-    public async Task Missing_branch_is_reported_not_substituted()
-    {
-        var clone = _repos.CreateRepository("intsol-biography-sync", withDevelop: false);
-
-        Assert.Null(await Git().ResolveRemoteBranchAsync(clone, "develop", CancellationToken.None));
-        Assert.NotNull(await Git().ResolveRemoteBranchAsync(clone, "main", CancellationToken.None));
-    }
-
-    [Fact]
-    public async Task Push_to_develop_changes_only_the_dev_commit()
+    public async Task Switching_branch_in_github_desktop_regenerates_the_context()
     {
         var clone = _repos.CreateRepository("intsol-dna-list-matching-ui");
         var git = Git();
-        var devBefore = await git.ResolveRemoteBranchAsync(clone, "develop", CancellationToken.None);
-        var prodBefore = await git.ResolveRemoteBranchAsync(clone, "main", CancellationToken.None);
-        var previousDev = new EnvState { CommitSha = devBefore, Status = ContextStatus.Ok, Fingerprint = "f" };
-        var previousProd = new EnvState { CommitSha = prodBefore, Status = ContextStatus.Ok, Fingerprint = "f" };
+        var before = (await git.GetCurrentAsync(clone, CancellationToken.None))!.Value;
+        var previous = new ContextState { Branch = before.Branch, CommitSha = before.Sha, Status = ContextStatus.Ok, Fingerprint = "f" };
+        Assert.False(ChangeDetector.NeedsRegeneration(previous, before.Sha, outputExists: true, "f"));
 
-        _repos.PushChange("intsol-dna-list-matching-ui", "develop", "App.tsx", "export {}\n");
-        await git.FetchAsync(clone, CancellationToken.None);
-        var devAfter = await git.ResolveRemoteBranchAsync(clone, "develop", CancellationToken.None);
-        var prodAfter = await git.ResolveRemoteBranchAsync(clone, "main", CancellationToken.None);
+        TestRepos.Git(clone, "checkout", "-q", "develop"); // the Current Branch dropdown in GitHub Desktop
+        var after = (await git.GetCurrentAsync(clone, CancellationToken.None))!.Value;
 
-        Assert.True(ChangeDetector.NeedsRegeneration(previousDev, devAfter!, outputExists: true, "f"));
-        Assert.False(ChangeDetector.NeedsRegeneration(previousProd, prodAfter!, outputExists: true, "f"));
+        Assert.Equal("develop", after.Branch);
+        Assert.True(ChangeDetector.NeedsRegeneration(previous, after.Sha, outputExists: true, "f"));
+
+        var target = Path.Combine(_repos.Root, "snap-dev");
+        await git.ExportSnapshotAsync(clone, after.Sha, target, CancellationToken.None);
+        Assert.Equal("Console.WriteLine(\"develop\");", File.ReadAllText(Path.Combine(target, "Program.cs")).TrimEnd());
+    }
+
+    [Fact]
+    public async Task Repository_without_commits_has_no_current_commit()
+    {
+        var empty = Path.Combine(_repos.Source, "intsol-new-api");
+        TestRepos.Git(_repos.Source, "init", "-q", empty);
+
+        Assert.Null(await Git().GetCurrentAsync(empty, CancellationToken.None));
     }
 
     public void Dispose() => _repos.Dispose();
@@ -2222,15 +2141,15 @@ public class GroupingTests
         var info = Group(CorporateLayout).Single(r => r.Name == repo);
 
         Assert.True(info.IsShared);
-        Assert.Equal($"Shared-Infrastructure/{repo}", info.OutputFolder);
+        Assert.Equal($"Shared-Infrastructure/{repo}-context.md", info.RelativeContextFile);
     }
 
     [Fact]
-    public void Output_folders_use_dashes_instead_of_spaces()
+    public void One_context_file_per_repository_inside_its_solution_folder()
     {
         var info = Group(CorporateLayout).Single(r => r.Name == "intsol-mkt-bio-data-api");
 
-        Assert.Equal("intsol-mkt-bio/Data-API", info.OutputFolder);
+        Assert.Equal("intsol-mkt-bio/intsol-mkt-bio-data-api-context.md", info.RelativeContextFile);
     }
 
     [Fact]
@@ -2257,7 +2176,7 @@ public class GroupingTests
         var info = Group("intsol-tools").Single();
 
         Assert.Equal("intsol-tools", info.Solution);
-        Assert.Equal("intsol-tools/Main", info.OutputFolder);
+        Assert.Equal("Main", info.Component);
     }
 
     [Fact]
@@ -2267,15 +2186,6 @@ public class GroupingTests
 
         Assert.Equal("intsol-lonely", info.Solution);
         Assert.Equal("API", info.Component);
-    }
-
-    [Fact]
-    public void Folder_collisions_fall_back_to_repository_name()
-    {
-        var repos = Group("intsol-x-cronjob", "intsol-x-cron-job");
-
-        Assert.Equal(2, repos.Select(r => r.OutputFolder).Distinct().Count());
-        Assert.All(repos, r => Assert.Equal(r.Name, r.ComponentFolder));
     }
 
     [Fact]

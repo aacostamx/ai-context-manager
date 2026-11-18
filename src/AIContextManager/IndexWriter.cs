@@ -13,18 +13,16 @@ public sealed class IndexWriter(IOptions<ContextManagerOptions> options, StateSt
     public void Write(IReadOnlyList<RepositoryInfo> repos, IReadOnlyDictionary<string, IReadOnlyList<string>> deploymentFiles)
     {
         var sb = new StringBuilder();
-        var all = repos.SelectMany(r => new[] { state.Get(r, ContextEnvironment.Dev), state.Get(r, ContextEnvironment.Prod) }).ToList();
-        var lastOk = all.Where(s => s?.Status == ContextStatus.Ok).Max(s => s!.GeneratedUtc);
+        var lastOk = repos.Select(state.Get).Where(s => s?.Status == ContextStatus.Ok).Max(s => s!.GeneratedUtc);
 
         sb.AppendLine("# AI Context Index");
         sb.AppendLine();
         sb.AppendLine($"- Latest successful update: **{(lastOk is { } t ? $"{t:yyyy-MM-dd HH:mm} UTC" : "none yet")}**");
-        sb.AppendLine($"- Index written: {DateTimeOffset.UtcNow:yyyy-MM-dd HH:mm} UTC");
-        sb.AppendLine($"- DEV = `{_o.RemoteName}/{_o.Branches.Dev}`, PROD = `{_o.RemoteName}/{_o.Branches.Prod}` (committed content only)");
         sb.AppendLine($"- Repositories: {repos.Count}");
+        sb.AppendLine("- Each context is the last commit of the branch checked out in GitHub Desktop (see the Branch column).");
         sb.AppendLine();
-        sb.AppendLine("Status: **OK** published · **STALE** fetch failed, built from last known ref · **NO BRANCH** branch does not exist · " +
-                      "**BLOCKED** possible secrets, not published · **FAILED** generation error · **PENDING** not processed yet");
+        sb.AppendLine("Status: **OK** published · **BLOCKED** possible secrets, not published · **FAILED** generation error · " +
+                      "**PENDING** not processed yet");
         sb.AppendLine();
 
         foreach (var solution in repos.Where(r => !r.IsShared).GroupBy(r => r.Solution, StringComparer.OrdinalIgnoreCase))
@@ -34,11 +32,11 @@ public sealed class IndexWriter(IOptions<ContextManagerOptions> options, StateSt
             sb.AppendLine();
             sb.AppendLine($"[ARCHITECTURE.md]({PathUtil.MarkdownLink($"{solution.Key}/ARCHITECTURE.md")}) (maintained by you)");
             sb.AppendLine();
-            AppendTable(sb, "Component", solution, r => r.Component);
+            AppendTable(sb, solution);
 
             if (deploymentFiles.TryGetValue(solution.Key, out var files) && files.Count > 0)
             {
-                sb.AppendLine("Deployment configuration in GitOps (DEV branch, see Shared-Infrastructure):");
+                sb.AppendLine("Deployment configuration in GitOps (see Shared-Infrastructure):");
                 sb.AppendLine();
                 foreach (var f in files) sb.AppendLine($"- `{f}`");
                 sb.AppendLine();
@@ -50,41 +48,36 @@ public sealed class IndexWriter(IOptions<ContextManagerOptions> options, StateSt
         {
             sb.AppendLine($"## {RepositoryInfo.SharedSolution}");
             sb.AppendLine();
-            AppendTable(sb, "Repository", shared, null);
+            AppendTable(sb, shared);
         }
 
         PathUtil.WriteAtomically(Path.Combine(_o.OutputPath, IndexFileName), sb.ToString());
     }
 
-    /// <param name="name">Optional first column (component name); null for a plain repository table.</param>
-    private void AppendTable(StringBuilder sb, string firstColumn, IEnumerable<RepositoryInfo> repos, Func<RepositoryInfo, string>? name)
+    private void AppendTable(StringBuilder sb, IEnumerable<RepositoryInfo> repos)
     {
-        var lead = name is null ? "" : $"| {firstColumn} ";
-        sb.AppendLine($"{lead}| Repository | DEV ({_o.Branches.Dev}) | PROD ({_o.Branches.Prod}) |");
-        sb.AppendLine(name is null ? "|---|---|---|" : "|---|---|---|---|");
+        sb.AppendLine("| Component | Repository | Branch | Context |");
+        sb.AppendLine("|---|---|---|---|");
         foreach (var r in repos)
         {
-            var first = name is null ? "" : $"| {name(r)} ";
-            sb.AppendLine($"{first}| `{r.Name}` | {Cell(r, ContextEnvironment.Dev)} | {Cell(r, ContextEnvironment.Prod)} |");
+            var s = state.Get(r);
+            sb.AppendLine($"| {r.Component} | `{r.Name}` | {(string.IsNullOrEmpty(s?.Branch) ? "" : $"`{s.Branch}`")} | {Cell(r, s)} |");
         }
 
         sb.AppendLine();
     }
 
-    private string Cell(RepositoryInfo repo, ContextEnvironment env)
+    private string Cell(RepositoryInfo repo, ContextState? s)
     {
-        var s = state.Get(repo, env);
-        var link = PathUtil.MarkdownLink($"{repo.OutputFolder}/{RepositoryInfo.ContextFileName(env)}");
-        var published = File.Exists(repo.ContextFile(_o.OutputPath, env));
-        var previous = published ? $" ([previous]({link}))" : "";
+        var link = PathUtil.MarkdownLink(repo.RelativeContextFile);
+        var previous = File.Exists(repo.ContextFile(_o.OutputPath)) ? $" ([previous]({link}))" : "";
+        var sha = s?.CommitSha is { Length: >= 7 } c ? c[..7] : "";
 
         return s?.Status switch
         {
-            ContextStatus.Ok => $"[{(s.RemoteStale ? "STALE" : "OK")} `{s.CommitSha?[..7]}`]({link}) {s.GeneratedUtc:yyyy-MM-dd HH:mm}" +
-                                (s.Tokens is { } t ? $" · {t:N0} tokens" : ""),
-            ContextStatus.MissingBranch => "NO BRANCH",
-            ContextStatus.Blocked => $"BLOCKED `{s.CommitSha?[..7]}`{previous}",
-            ContextStatus.Failed => $"FAILED `{s.CommitSha?[..7]}`{previous}",
+            ContextStatus.Ok => $"[OK `{sha}`]({link}) {s.GeneratedUtc:yyyy-MM-dd HH:mm}" + (s.Tokens is { } t ? $" · {t:N0} tokens" : ""),
+            ContextStatus.Blocked => $"BLOCKED `{sha}`{previous}",
+            ContextStatus.Failed => $"FAILED {s.Message}{previous}",
             _ => "PENDING",
         };
     }
@@ -102,8 +95,7 @@ public sealed class IndexWriter(IOptions<ContextManagerOptions> options, StateSt
         sb.AppendLine("## Components");
         sb.AppendLine();
         foreach (var c in components)
-            sb.AppendLine($"- **{c.Component}** (`{c.Name}`): [DEV]({PathUtil.MarkdownLink($"{c.ComponentFolder}/DEV-context.md")}) · " +
-                          $"[PROD]({PathUtil.MarkdownLink($"{c.ComponentFolder}/PROD-context.md")})");
+            sb.AppendLine($"- **{c.Component}**: [{c.Name}]({PathUtil.MarkdownLink($"{c.Name}-context.md")})");
         sb.AppendLine();
         sb.AppendLine("## How the components talk to each other");
         sb.AppendLine();

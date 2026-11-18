@@ -8,7 +8,7 @@ public class ChangeDetectionTests
     private const string ShaB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     private const string Fp = "fp1";
 
-    private static EnvState Ok(string sha) => new() { CommitSha = sha, Status = ContextStatus.Ok, Fingerprint = Fp };
+    private static ContextState Ok(string sha) => new() { CommitSha = sha, Status = ContextStatus.Ok, Fingerprint = Fp };
 
     [Fact]
     public void First_time_is_generated() =>

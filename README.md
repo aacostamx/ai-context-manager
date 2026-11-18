@@ -1,20 +1,21 @@
 # AIContextManager
 
-A small .NET 10 console app that finds every Git repository under your `source` folder and keeps two Markdown
-contexts per repository, built with [Repomix](https://github.com/yamadashy/repomix):
+A small .NET 8 console app that finds every Git repository under your `source` folder and keeps **one** Markdown
+context per repository, built with [Repomix](https://github.com/yamadashy/repomix).
 
-- `DEV-context.md` from `origin/develop`
-- `PROD-context.md` from `origin/main`
+The context is the last commit of the branch you have checked out in GitHub Desktop. Want DEV? Pick `develop` in
+GitHub Desktop's **Current Branch** dropdown. Want PROD? Pick `main`. The context regenerates by itself within seconds.
 
-They are grouped by solution (API, UI, Sync, ...) with a navigable `00-INDEX.md`, ready to attach to GitHub Copilot,
+Contexts are grouped by solution with a navigable `00-INDEX.md`, ready to attach to GitHub Copilot,
 Microsoft 365 Copilot, Copilot Notebooks or any assistant that reads Markdown.
 
-No repository list, no scripts, no database. It only creates files; it never calls an AI service.
+No repository list, no scripts, no database, no GitHub credentials. It only creates files; it never calls an AI
+service and never contacts GitHub.
 
 ## Requirements
 
-- .NET 10 SDK (or runtime, to run a published build)
-- Git on `PATH` (Git for Windows; GitHub Desktop's bundled Git is not on `PATH`)
+- .NET 8 SDK (or runtime, to run a published build)
+- GitHub Desktop (its bundled Git is found automatically) or Git for Windows on `PATH`
 - Repomix: `npm install -g repomix` (or set `RepomixCommand` to its full path)
 
 ## Run
@@ -28,7 +29,7 @@ From a terminal:
 dotnet run --project src/AIContextManager
 ```
 
-One pass and exit (useful the first time, or from Windows Task Scheduler):
+One pass and exit:
 
 ```bash
 dotnet run --project src/AIContextManager -- --once
@@ -54,12 +55,10 @@ dotnet test
 | `ExcludedFolders` | `["Repos"]` | Folders ignored completely, with everything inside (no discovery, no watching). Relative to `SourcePath`, or absolute. |
 | `OutputPath` | `C:\Users\O7U\AI-Context` | Where contexts and `00-INDEX.md` go. Must not be inside `SourcePath`. |
 | `StagingPath` | `%LOCALAPPDATA%\AIContextManager\staging` | Local work area: snapshots, scan reports, `state.json`. Never cloud-synced. |
-| `Branches:Dev` / `Branches:Prod` | `develop` / `main` | Remote branches used for DEV and PROD. |
 | `AutoDiscover` | `true` | Pick up added/removed repositories while running. |
-| `WatchChanges` | `true` | React to Git ref updates (e.g. GitHub Desktop fetch) via `FileSystemWatcher`. |
-| `GitCheckMinutes` | `15` | Interval for `git fetch` + check of all repositories. |
+| `WatchChanges` | `true` | React to branch switches and new commits via `FileSystemWatcher`. |
+| `GitCheckMinutes` | `15` | Safety-net re-check of all repositories (no network). |
 | `DebounceSeconds` | `10` | Quiet time after file events before a check. |
-| `FetchRemote` | `true` | Run `git fetch` before checks. |
 | `RepomixCommand` | `repomix` | Name or full path of the Repomix CLI. |
 | `AllowCloudPublish` | `false` | Must be `true` to write into a OneDrive/SharePoint folder. Set only if your policy allows full source in that location. |
 | `SharedRepositories` | `[]` | Extra names to treat as shared infrastructure. |
@@ -70,8 +69,8 @@ Configuration is validated at startup; the app exits with a clear message when s
 ## How it works
 
 1. **Discovery.** Walks `SourcePath` (default depth 3) and treats a folder as a repository when it has a `.git`
-   folder with `HEAD`, or a `.git` file starting with `gitdir:` (worktrees). `bin`, `obj`, `.vs`, `node_modules`,
-   `dist`, `build` and `.git` are never traversed.
+   folder with `HEAD`, or a `.git` file starting with `gitdir:` (worktrees). `ExcludedFolders`, `bin`, `obj`, `.vs`,
+   `node_modules`, `dist`, `build` and `.git` are never traversed.
 2. **Grouping** (naming only, conservative):
    - `*gitops*`, `*-helm-chart` and `SharedRepositories` go to `Shared-Infrastructure/`.
    - Suffixes `-api`, `-ui`, `-data-api`, `-worker`, `-sync`, `-cronjob`, `-cron-job` give the component.
@@ -79,14 +78,11 @@ Configuration is validated at startup; the app exits with a clear message when s
    - A repo joins another solution only if its base is that solution plus one word
      (`intsol-sa-rules-salesforce-api` joins `intsol-sa-rules` as "Salesforce API").
    - Anything else stays its own solution. A shared text prefix alone never merges repos.
-3. **Branch content without touching your repos.** The app never runs `checkout`, `reset`, `clean` or `pull`.
-   It runs `git fetch` (updates only `refs/remotes/origin/*`, like GitHub Desktop does), resolves
-   `origin/develop` / `origin/main` with `git rev-parse`, and streams that commit with `git archive` into a temporary
-   folder in `StagingPath`. No worktrees are created and uncommitted changes can never be included.
-   - Fetch fails: the last known remote ref is used and the context is marked **STALE**.
-   - Branch missing: reported as **NO BRANCH**; no other branch is substituted.
-4. **Repomix.** One run per repository and environment, Markdown style, respecting the snapshot's `.gitignore`
-   and `.repomixignore`, plus built-in ignores (build output, lock files, logs, previously generated contexts).
+3. **Read-only Git.** The app reads the checked-out branch and its last commit (`git rev-parse HEAD`) and streams
+   that commit with `git archive` into a temporary folder in `StagingPath`. It never runs `fetch`, `pull`,
+   `checkout`, `reset` or `clean`, never creates worktrees, and uncommitted changes are never included.
+4. **Repomix.** One run per repository, Markdown style, respecting the snapshot's `.gitignore` and `.repomixignore`,
+   plus built-in ignores (build output, lock files, logs, previously generated contexts).
 5. **Security, fail-closed.**
    - Known sensitive files are never copied into the snapshot: `.env*` (except `.env.example`), `*.pfx`, `*.pem`,
      `*.key`, `id_rsa*`, `.npmrc`, `secrets.json`, `*.local.json`, `terraform.tfstate`, and similar.
@@ -94,14 +90,14 @@ Configuration is validated at startup; the app exits with a clear message when s
      hard-coded `password`/`secret`/`apiKey` values; placeholders like `#{X}#`, `${X}`, `""` are allowed).
    - Any finding **blocks** publication. The report in `StagingPath\contexts\...\*.secret-scan.txt` lists rule, file
      and line only, never the value. Fix the repository or exclude the file, then the next commit is processed.
-   - Only clean files are copied to `OutputPath`. Git URLs are stripped of credentials before logging.
+   - Only clean files are copied to `OutputPath`.
 6. **Change detection.** `state.json` remembers the commit and settings used for each context. A context is rebuilt
-   only when its branch commit changes, the settings change, or the published file was deleted. A push to `develop`
-   rebuilds only DEV. The watcher reacts to `.git/refs/remotes/*` and `packed-refs` changes and to folders
-   appearing/disappearing; editing working files does nothing (DEV/PROD are committed content).
-7. **Index.** `00-INDEX.md` shows latest successful update, per-component DEV/PROD status with commit, date and token
-   count, and GitOps files that mention the solution's repositories. A starter `ARCHITECTURE.md` is created per
-   solution only if missing; it is never overwritten.
+   only when the checked-out commit changes (branch switch, commit, pull), the settings change, or the published
+   file was deleted. The watcher reacts to `.git/HEAD`, `.git/refs/heads/*` and `packed-refs`, and to folders
+   appearing/disappearing; editing working files does nothing.
+7. **Index.** `00-INDEX.md` shows the latest successful update and, per repository, its branch, commit, date and
+   token count, plus GitOps files that mention the solution's repositories. A starter `ARCHITECTURE.md` is created
+   per solution only if missing; it is never overwritten.
 
 ## Output
 
@@ -110,10 +106,10 @@ AI-Context/
 ├── 00-INDEX.md
 ├── intsol-dna-list-matching/
 │   ├── ARCHITECTURE.md
-│   ├── API/DEV-context.md, PROD-context.md
-│   └── UI/DEV-context.md, PROD-context.md
+│   ├── intsol-dna-list-matching-api-context.md
+│   └── intsol-dna-list-matching-ui-context.md
 └── Shared-Infrastructure/
-    └── intsol-gitops/DEV-context.md, PROD-context.md
+    └── intsol-gitops-context.md
 ```
 
 See [`samples/dna`](samples/dna/00-INDEX.md) for output generated from synthetic DNA repositories.
@@ -129,5 +125,5 @@ Because contexts contain full source, the app refuses a OneDrive/SharePoint `Out
 
 - Grouping is name-based. An unusual name ends up as its own solution rather than being merged.
 - The secret scanner is pattern-based. It errs on blocking; it cannot prove a file is secret-free.
-- Repositories that are worktrees (`.git` file) are rechecked on the periodic Git check, not by the watcher.
-- No WORKING (uncommitted) context yet.
+- Repositories that are worktrees (`.git` file) are rechecked on the periodic check, not by the watcher.
+- Uncommitted changes are not included; commit (no need to push) to see them in the context.

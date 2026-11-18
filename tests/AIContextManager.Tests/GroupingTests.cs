@@ -46,15 +46,15 @@ public class GroupingTests
         var info = Group(CorporateLayout).Single(r => r.Name == repo);
 
         Assert.True(info.IsShared);
-        Assert.Equal($"Shared-Infrastructure/{repo}", info.OutputFolder);
+        Assert.Equal($"Shared-Infrastructure/{repo}-context.md", info.RelativeContextFile);
     }
 
     [Fact]
-    public void Output_folders_use_dashes_instead_of_spaces()
+    public void One_context_file_per_repository_inside_its_solution_folder()
     {
         var info = Group(CorporateLayout).Single(r => r.Name == "intsol-mkt-bio-data-api");
 
-        Assert.Equal("intsol-mkt-bio/Data-API", info.OutputFolder);
+        Assert.Equal("intsol-mkt-bio/intsol-mkt-bio-data-api-context.md", info.RelativeContextFile);
     }
 
     [Fact]
@@ -81,7 +81,7 @@ public class GroupingTests
         var info = Group("intsol-tools").Single();
 
         Assert.Equal("intsol-tools", info.Solution);
-        Assert.Equal("intsol-tools/Main", info.OutputFolder);
+        Assert.Equal("Main", info.Component);
     }
 
     [Fact]
@@ -91,15 +91,6 @@ public class GroupingTests
 
         Assert.Equal("intsol-lonely", info.Solution);
         Assert.Equal("API", info.Component);
-    }
-
-    [Fact]
-    public void Folder_collisions_fall_back_to_repository_name()
-    {
-        var repos = Group("intsol-x-cronjob", "intsol-x-cron-job");
-
-        Assert.Equal(2, repos.Select(r => r.OutputFolder).Distinct().Count());
-        Assert.All(repos, r => Assert.Equal(r.Name, r.ComponentFolder));
     }
 
     [Fact]
