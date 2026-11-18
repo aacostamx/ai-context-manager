@@ -8,40 +8,44 @@ public class ChangeDetectionTests
     private const string ShaB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     private const string Fp = "fp1";
 
-    private static ContextState Ok(string sha) => new() { CommitSha = sha, Status = ContextStatus.Ok, Fingerprint = Fp };
+    private static ContextState Ok(string sha) => new() { Branch = "main", CommitSha = sha, Status = ContextStatus.Ok, Fingerprint = Fp };
 
     [Fact]
     public void First_time_is_generated() =>
-        Assert.True(ChangeDetector.NeedsRegeneration(null, ShaA, outputExists: false, Fp));
+        Assert.True(ChangeDetector.NeedsRegeneration(null, "main", ShaA, outputExists: false, Fp));
 
     [Fact]
     public void Same_commit_is_not_regenerated() =>
-        Assert.False(ChangeDetector.NeedsRegeneration(Ok(ShaA), ShaA, outputExists: true, Fp));
+        Assert.False(ChangeDetector.NeedsRegeneration(Ok(ShaA), "main", ShaA, outputExists: true, Fp));
 
     [Fact]
     public void New_commit_is_regenerated() =>
-        Assert.True(ChangeDetector.NeedsRegeneration(Ok(ShaA), ShaB, outputExists: true, Fp));
+        Assert.True(ChangeDetector.NeedsRegeneration(Ok(ShaA), "main", ShaB, outputExists: true, Fp));
+
+    [Fact]
+    public void New_branch_on_the_same_commit_is_regenerated() =>
+        Assert.True(ChangeDetector.NeedsRegeneration(Ok(ShaA), "feature/new-screen", ShaA, outputExists: true, Fp));
 
     [Fact]
     public void Deleted_output_is_regenerated() =>
-        Assert.True(ChangeDetector.NeedsRegeneration(Ok(ShaA), ShaA, outputExists: false, Fp));
+        Assert.True(ChangeDetector.NeedsRegeneration(Ok(ShaA), "main", ShaA, outputExists: false, Fp));
 
     [Fact]
     public void Changed_settings_regenerate() =>
-        Assert.True(ChangeDetector.NeedsRegeneration(Ok(ShaA), ShaA, outputExists: true, "fp2"));
+        Assert.True(ChangeDetector.NeedsRegeneration(Ok(ShaA), "main", ShaA, outputExists: true, "fp2"));
 
     [Fact]
     public void Blocked_commit_waits_for_a_new_commit()
     {
         var blocked = Ok(ShaA) with { Status = ContextStatus.Blocked };
 
-        Assert.False(ChangeDetector.NeedsRegeneration(blocked, ShaA, outputExists: false, Fp));
-        Assert.True(ChangeDetector.NeedsRegeneration(blocked, ShaB, outputExists: false, Fp));
+        Assert.False(ChangeDetector.NeedsRegeneration(blocked, "main", ShaA, outputExists: false, Fp));
+        Assert.True(ChangeDetector.NeedsRegeneration(blocked, "main", ShaB, outputExists: false, Fp));
     }
 
     [Fact]
     public void Failed_generation_is_retried() =>
-        Assert.True(ChangeDetector.NeedsRegeneration(Ok(ShaA) with { Status = ContextStatus.Failed }, ShaA, true, Fp));
+        Assert.True(ChangeDetector.NeedsRegeneration(Ok(ShaA) with { Status = ContextStatus.Failed }, "main", ShaA, true, Fp));
 
     [Fact]
     public void Debouncer_releases_key_only_after_quiet_period()

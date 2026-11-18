@@ -109,13 +109,13 @@ public class GitAndDiscoveryTests : IDisposable
         var git = Git();
         var before = (await git.GetCurrentAsync(clone, CancellationToken.None))!.Value;
         var previous = new ContextState { Branch = before.Branch, CommitSha = before.Sha, Status = ContextStatus.Ok, Fingerprint = "f" };
-        Assert.False(ChangeDetector.NeedsRegeneration(previous, before.Sha, outputExists: true, "f"));
+        Assert.False(ChangeDetector.NeedsRegeneration(previous, before.Branch, before.Sha, outputExists: true, "f"));
 
         TestRepos.Git(clone, "checkout", "-q", "develop"); // the Current Branch dropdown in GitHub Desktop
         var after = (await git.GetCurrentAsync(clone, CancellationToken.None))!.Value;
 
         Assert.Equal("develop", after.Branch);
-        Assert.True(ChangeDetector.NeedsRegeneration(previous, after.Sha, outputExists: true, "f"));
+        Assert.True(ChangeDetector.NeedsRegeneration(previous, after.Branch, after.Sha, outputExists: true, "f"));
 
         var target = Path.Combine(_repos.Root, "snap-dev");
         await git.ExportSnapshotAsync(clone, after.Sha, target, CancellationToken.None);

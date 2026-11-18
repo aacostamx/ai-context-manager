@@ -146,16 +146,24 @@ public sealed class ContextMonitorService(
     private async Task ProcessAsync(IReadOnlyList<RepositoryInfo> repos, CancellationToken ct, bool forceIndex = false)
     {
         var changed = forceIndex;
+        var regenerated = 0;
         foreach (var repo in repos)
         {
             ct.ThrowIfCancellationRequested();
             var before = state.Get(repo);
             var after = await generator.ProcessAsync(repo, before, ct);
             state.Set(repo, after);
-            changed |= before != after;
+            if (before != after)
+            {
+                changed = true;
+                regenerated++;
+            }
         }
 
         state.Save();
+        if (repos.Count > 0)
+            log.LogInformation("Checked {Count} repositories: {Regenerated} regenerated, {UpToDate} already up to date.",
+                repos.Count, regenerated, repos.Count - regenerated);
         if (changed || !File.Exists(Path.Combine(_o.OutputPath, IndexWriter.IndexFileName)))
             index.Write(_repos, await FindDeploymentFilesAsync(ct));
     }

@@ -6,13 +6,14 @@ namespace AIContextManager;
 public static class ChangeDetector
 {
     /// <summary>
-    /// A context only depends on the checked-out commit and the generation settings, so it is regenerated only
-    /// when one of those changed (new commit, pull or branch switch) or the published file disappeared.
+    /// A context only depends on the checked-out branch, its commit and the generation settings, so it is regenerated
+    /// only when one of those changed (new commit, pull, branch switch) or the published file disappeared.
     /// </summary>
-    public static bool NeedsRegeneration(ContextState? previous, string currentSha, bool outputExists, string fingerprint)
+    public static bool NeedsRegeneration(ContextState? previous, string currentBranch, string currentSha, bool outputExists, string fingerprint)
     {
         if (previous is null) return true;
         if (!string.Equals(previous.CommitSha, currentSha, StringComparison.OrdinalIgnoreCase)) return true;
+        if (!string.Equals(previous.Branch, currentBranch, StringComparison.Ordinal)) return true; // new branch on the same commit
         if (!string.Equals(previous.Fingerprint, fingerprint, StringComparison.Ordinal)) return true;
 
         return previous.Status switch

@@ -301,13 +301,14 @@ namespace AIContextManager;
 public static class ChangeDetector
 {
     /// <summary>
-    /// A context only depends on the checked-out commit and the generation settings, so it is regenerated only
-    /// when one of those changed (new commit, pull or branch switch) or the published file disappeared.
+    /// A context only depends on the checked-out branch, its commit and the generation settings, so it is regenerated
+    /// only when one of those changed (new commit, pull, branch switch) or the published file disappeared.
     /// </summary>
-    public static bool NeedsRegeneration(ContextState? previous, string currentSha, bool outputExists, string fingerprint)
+    public static bool NeedsRegeneration(ContextState? previous, string currentBranch, string currentSha, bool outputExists, string fingerprint)
     {
         if (previous is null) return true;
         if (!string.Equals(previous.CommitSha, currentSha, StringComparison.OrdinalIgnoreCase)) return true;
+        if (!string.Equals(previous.Branch, currentBranch, StringComparison.Ordinal)) return true; // new branch on the same commit
         if (!string.Equals(previous.Fingerprint, fingerprint, StringComparison.Ordinal)) return true;
 
         return previous.Status switch
@@ -388,7 +389,7 @@ public sealed class ContextGenerator(
 
         var label = $"{repo.Name} ({branch})";
         var publishedFile = repo.ContextFile(_o.OutputPath);
-        if (!ChangeDetector.NeedsRegeneration(previous, sha, File.Exists(publishedFile), Fingerprint))
+        if (!ChangeDetector.NeedsRegeneration(previous, branch, sha, File.Exists(publishedFile), Fingerprint))
         {
             log.LogDebug("{Context}: unchanged at {Sha}", label, sha[..7]);
             return previous!;
@@ -774,16 +775,24 @@ public sealed class ContextMonitorService(
     private async Task ProcessAsync(IReadOnlyList<RepositoryInfo> repos, CancellationToken ct, bool forceIndex = false)
     {
         var changed = forceIndex;
+        var regenerated = 0;
         foreach (var repo in repos)
         {
             ct.ThrowIfCancellationRequested();
             var before = state.Get(repo);
             var after = await generator.ProcessAsync(repo, before, ct);
             state.Set(repo, after);
-            changed |= before != after;
+            if (before != after)
+            {
+                changed = true;
+                regenerated++;
+            }
         }
 
         state.Save();
+        if (repos.Count > 0)
+            log.LogInformation("Checked {Count} repositories: {Regenerated} regenerated, {UpToDate} already up to date.",
+                repos.Count, regenerated, repos.Count - regenerated);
         if (changed || !File.Exists(Path.Combine(_o.OutputPath, IndexWriter.IndexFileName)))
             index.Write(_repos, await FindDeploymentFilesAsync(ct));
     }
@@ -1896,40 +1905,44 @@ public class ChangeDetectionTests
     private const string ShaB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     private const string Fp = "fp1";
 
-    private static ContextState Ok(string sha) => new() { CommitSha = sha, Status = ContextStatus.Ok, Fingerprint = Fp };
+    private static ContextState Ok(string sha) => new() { Branch = "main", CommitSha = sha, Status = ContextStatus.Ok, Fingerprint = Fp };
 
     [Fact]
     public void First_time_is_generated() =>
-        Assert.True(ChangeDetector.NeedsRegeneration(null, ShaA, outputExists: false, Fp));
+        Assert.True(ChangeDetector.NeedsRegeneration(null, "main", ShaA, outputExists: false, Fp));
 
     [Fact]
     public void Same_commit_is_not_regenerated() =>
-        Assert.False(ChangeDetector.NeedsRegeneration(Ok(ShaA), ShaA, outputExists: true, Fp));
+        Assert.False(ChangeDetector.NeedsRegeneration(Ok(ShaA), "main", ShaA, outputExists: true, Fp));
 
     [Fact]
     public void New_commit_is_regenerated() =>
-        Assert.True(ChangeDetector.NeedsRegeneration(Ok(ShaA), ShaB, outputExists: true, Fp));
+        Assert.True(ChangeDetector.NeedsRegeneration(Ok(ShaA), "main", ShaB, outputExists: true, Fp));
+
+    [Fact]
+    public void New_branch_on_the_same_commit_is_regenerated() =>
+        Assert.True(ChangeDetector.NeedsRegeneration(Ok(ShaA), "feature/new-screen", ShaA, outputExists: true, Fp));
 
     [Fact]
     public void Deleted_output_is_regenerated() =>
-        Assert.True(ChangeDetector.NeedsRegeneration(Ok(ShaA), ShaA, outputExists: false, Fp));
+        Assert.True(ChangeDetector.NeedsRegeneration(Ok(ShaA), "main", ShaA, outputExists: false, Fp));
 
     [Fact]
     public void Changed_settings_regenerate() =>
-        Assert.True(ChangeDetector.NeedsRegeneration(Ok(ShaA), ShaA, outputExists: true, "fp2"));
+        Assert.True(ChangeDetector.NeedsRegeneration(Ok(ShaA), "main", ShaA, outputExists: true, "fp2"));
 
     [Fact]
     public void Blocked_commit_waits_for_a_new_commit()
     {
         var blocked = Ok(ShaA) with { Status = ContextStatus.Blocked };
 
-        Assert.False(ChangeDetector.NeedsRegeneration(blocked, ShaA, outputExists: false, Fp));
-        Assert.True(ChangeDetector.NeedsRegeneration(blocked, ShaB, outputExists: false, Fp));
+        Assert.False(ChangeDetector.NeedsRegeneration(blocked, "main", ShaA, outputExists: false, Fp));
+        Assert.True(ChangeDetector.NeedsRegeneration(blocked, "main", ShaB, outputExists: false, Fp));
     }
 
     [Fact]
     public void Failed_generation_is_retried() =>
-        Assert.True(ChangeDetector.NeedsRegeneration(Ok(ShaA) with { Status = ContextStatus.Failed }, ShaA, true, Fp));
+        Assert.True(ChangeDetector.NeedsRegeneration(Ok(ShaA) with { Status = ContextStatus.Failed }, "main", ShaA, true, Fp));
 
     [Fact]
     public void Debouncer_releases_key_only_after_quiet_period()
@@ -2083,13 +2096,13 @@ public class GitAndDiscoveryTests : IDisposable
         var git = Git();
         var before = (await git.GetCurrentAsync(clone, CancellationToken.None))!.Value;
         var previous = new ContextState { Branch = before.Branch, CommitSha = before.Sha, Status = ContextStatus.Ok, Fingerprint = "f" };
-        Assert.False(ChangeDetector.NeedsRegeneration(previous, before.Sha, outputExists: true, "f"));
+        Assert.False(ChangeDetector.NeedsRegeneration(previous, before.Branch, before.Sha, outputExists: true, "f"));
 
         TestRepos.Git(clone, "checkout", "-q", "develop"); // the Current Branch dropdown in GitHub Desktop
         var after = (await git.GetCurrentAsync(clone, CancellationToken.None))!.Value;
 
         Assert.Equal("develop", after.Branch);
-        Assert.True(ChangeDetector.NeedsRegeneration(previous, after.Sha, outputExists: true, "f"));
+        Assert.True(ChangeDetector.NeedsRegeneration(previous, after.Branch, after.Sha, outputExists: true, "f"));
 
         var target = Path.Combine(_repos.Root, "snap-dev");
         await git.ExportSnapshotAsync(clone, after.Sha, target, CancellationToken.None);

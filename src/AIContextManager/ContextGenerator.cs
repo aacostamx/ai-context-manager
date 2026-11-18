@@ -31,7 +31,7 @@ public sealed class ContextGenerator(
 
         var label = $"{repo.Name} ({branch})";
         var publishedFile = repo.ContextFile(_o.OutputPath);
-        if (!ChangeDetector.NeedsRegeneration(previous, sha, File.Exists(publishedFile), Fingerprint))
+        if (!ChangeDetector.NeedsRegeneration(previous, branch, sha, File.Exists(publishedFile), Fingerprint))
         {
             log.LogDebug("{Context}: unchanged at {Sha}", label, sha[..7]);
             return previous!;
