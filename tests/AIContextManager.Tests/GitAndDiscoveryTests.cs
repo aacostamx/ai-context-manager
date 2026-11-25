@@ -75,23 +75,29 @@ public class GitAndDiscoveryTests : IDisposable
     }
 
     [Fact]
-    public async Task Snapshot_is_last_commit_of_checked_out_branch_and_repo_is_untouched()
+    public async Task Develop_and_main_are_read_from_origin_whatever_branch_is_checked_out()
     {
-        var clone = _repos.CreateRepository("intsol-dna-list-matching-api"); // checked out on feature/my-work (from main)
+        var clone = _repos.CreateRepository("intsol-dna-list-matching-api"); // checked out on feature/my-work
         File.WriteAllText(Path.Combine(clone, "Program.cs"), "// uncommitted local edit\n");
         var statusBefore = TestRepos.Git(clone, "status", "--porcelain");
         var git = Git();
 
-        var current = await git.GetCurrentAsync(clone, CancellationToken.None);
-        Assert.NotNull(current);
-        Assert.Equal("feature/my-work", current.Value.Branch);
+        Assert.Null(await git.FetchAsync(clone, CancellationToken.None));
+        var dev = await git.ResolveRemoteBranchAsync(clone, "develop", CancellationToken.None);
+        var prod = await git.ResolveRemoteBranchAsync(clone, "main", CancellationToken.None);
+        Assert.NotNull(dev);
+        Assert.NotNull(prod);
+        Assert.NotEqual(dev, prod);
 
-        var target = Path.Combine(_repos.Root, "snap");
-        var (written, skipped) = await git.ExportSnapshotAsync(clone, current.Value.Sha, target, CancellationToken.None);
+        var devSnap = Path.Combine(_repos.Root, "snap-dev");
+        var (written, skipped) = await git.ExportSnapshotAsync(clone, dev!, devSnap, CancellationToken.None);
+        var prodSnap = Path.Combine(_repos.Root, "snap-prod");
+        await git.ExportSnapshotAsync(clone, prod!, prodSnap, CancellationToken.None);
 
-        // Committed content only (uncommitted edit not included), .env never copied.
-        Assert.Equal("Console.WriteLine(\"main\");", File.ReadAllText(Path.Combine(target, "Program.cs")).TrimEnd()); // autocrlf may apply
-        Assert.False(File.Exists(Path.Combine(target, ".env")), ".env must never be copied");
+        // Each environment gets its own branch content; uncommitted edits and .env are never included.
+        Assert.Equal("Console.WriteLine(\"develop\");", File.ReadAllText(Path.Combine(devSnap, "Program.cs")).TrimEnd()); // autocrlf may apply
+        Assert.Equal("Console.WriteLine(\"main\");", File.ReadAllText(Path.Combine(prodSnap, "Program.cs")).TrimEnd());
+        Assert.False(File.Exists(Path.Combine(devSnap, ".env")), ".env must never be copied");
         Assert.Equal(1, skipped);
         Assert.Equal(2, written);
 
@@ -103,32 +109,50 @@ public class GitAndDiscoveryTests : IDisposable
     }
 
     [Fact]
-    public async Task Switching_branch_in_github_desktop_regenerates_the_context()
+    public async Task Missing_release_branch_is_reported_not_substituted()
     {
-        var clone = _repos.CreateRepository("intsol-dna-list-matching-ui");
-        var git = Git();
-        var before = (await git.GetCurrentAsync(clone, CancellationToken.None))!.Value;
-        var previous = new ContextState { Branch = before.Branch, CommitSha = before.Sha, Status = ContextStatus.Ok, Fingerprint = "f" };
-        Assert.False(ChangeDetector.NeedsRegeneration(previous, before.Branch, before.Sha, outputExists: true, "f"));
+        var clone = _repos.CreateRepository("intsol-biography-sync");
 
-        TestRepos.Git(clone, "checkout", "-q", "develop"); // the Current Branch dropdown in GitHub Desktop
-        var after = (await git.GetCurrentAsync(clone, CancellationToken.None))!.Value;
-
-        Assert.Equal("develop", after.Branch);
-        Assert.True(ChangeDetector.NeedsRegeneration(previous, after.Branch, after.Sha, outputExists: true, "f"));
-
-        var target = Path.Combine(_repos.Root, "snap-dev");
-        await git.ExportSnapshotAsync(clone, after.Sha, target, CancellationToken.None);
-        Assert.Equal("Console.WriteLine(\"develop\");", File.ReadAllText(Path.Combine(target, "Program.cs")).TrimEnd());
+        Assert.Null(await Git().ResolveRemoteBranchAsync(clone, "release", CancellationToken.None));
+        Assert.NotNull(await Git().ResolveRemoteBranchAsync(clone, "main", CancellationToken.None));
     }
 
     [Fact]
-    public async Task Repository_without_commits_has_no_current_commit()
+    public async Task Push_to_develop_changes_only_the_dev_context_after_fetch()
     {
-        var empty = Path.Combine(_repos.Source, "intsol-new-api");
-        TestRepos.Git(_repos.Source, "init", "-q", empty);
+        var clone = _repos.CreateRepository("intsol-dna-list-matching-ui");
+        var git = Git();
+        var devBefore = (await git.ResolveRemoteBranchAsync(clone, "develop", CancellationToken.None))!;
+        var prodBefore = (await git.ResolveRemoteBranchAsync(clone, "main", CancellationToken.None))!;
+        var previousDev = new ContextState { Branch = "develop", CommitSha = devBefore, Status = ContextStatus.Ok, Fingerprint = "f" };
+        var previousProd = new ContextState { Branch = "main", CommitSha = prodBefore, Status = ContextStatus.Ok, Fingerprint = "f" };
 
-        Assert.Null(await Git().GetCurrentAsync(empty, CancellationToken.None));
+        _repos.PushChange("intsol-dna-list-matching-ui", "develop", "App.tsx", "export {}\n"); // a teammate pushes
+        Assert.Null(await git.FetchAsync(clone, CancellationToken.None));
+        var devAfter = (await git.ResolveRemoteBranchAsync(clone, "develop", CancellationToken.None))!;
+        var prodAfter = (await git.ResolveRemoteBranchAsync(clone, "main", CancellationToken.None))!;
+
+        Assert.True(ChangeDetector.NeedsRegeneration(previousDev, "develop", devAfter, outputExists: true, "f"));
+        Assert.False(ChangeDetector.NeedsRegeneration(previousProd, "main", prodAfter, outputExists: true, "f"));
+    }
+
+    [Fact]
+    public async Task Fetch_failure_is_reported_without_throwing()
+    {
+        var clone = _repos.CreateRepository("intsol-biography-api");
+        TestRepos.Git(clone, "remote", "set-url", "origin", Path.Combine(_repos.Root, "does-not-exist.git"));
+
+        Assert.NotNull(await Git().FetchAsync(clone, CancellationToken.None));
+        Assert.NotNull(await Git().ResolveRemoteBranchAsync(clone, "main", CancellationToken.None)); // last fetched ref still usable
+    }
+
+    [Fact]
+    public void Each_repository_gets_its_own_folder()
+    {
+        var repo = new RepositoryInfo("intsol-dna-list-matching-api", @"C:\source\intsol-dna-list-matching-api");
+
+        Assert.Equal("intsol-dna-list-matching-api/intsol-dna-list-matching-api-QA-context.md",
+            repo.RelativeContextFile(new EnvironmentOptions { Name = "QA", Branch = "release" }));
     }
 
     public void Dispose() => _repos.Dispose();

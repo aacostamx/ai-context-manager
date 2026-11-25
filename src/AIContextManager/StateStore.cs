@@ -4,7 +4,7 @@ using Microsoft.Extensions.Options;
 
 namespace AIContextManager;
 
-/// <summary>Remembers the last processed branch/commit per repository in StagingPath\state.json.</summary>
+/// <summary>Remembers the last processed commit per repository + environment in StagingPath\state.json.</summary>
 public sealed class StateStore(IOptions<ContextManagerOptions> options, ILogger<StateStore> log)
 {
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
@@ -28,9 +28,11 @@ public sealed class StateStore(IOptions<ContextManagerOptions> options, ILogger<
         }
     }
 
-    public ContextState? Get(RepositoryInfo repo) => _states.GetValueOrDefault(repo.RootPath);
+    public ContextState? Get(RepositoryInfo repo, EnvironmentOptions env) => _states.GetValueOrDefault(Key(repo, env));
 
-    public void Set(RepositoryInfo repo, ContextState state) => _states[repo.RootPath] = state;
+    public void Set(RepositoryInfo repo, EnvironmentOptions env, ContextState state) => _states[Key(repo, env)] = state;
+
+    private static string Key(RepositoryInfo repo, EnvironmentOptions env) => $"{repo.RootPath}|{env.Name}";
 
     public void Save() => PathUtil.WriteAtomically(_file, JsonSerializer.Serialize(_states, Json));
 }

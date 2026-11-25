@@ -4,15 +4,19 @@ using Microsoft.Extensions.Logging;
 namespace AIContextManager;
 
 /// <summary>
-/// Read-only Git access. Needs no credentials and no configuration; it never contacts GitHub.
-/// The context follows the branch you have checked out in GitHub Desktop (Current Branch dropdown):
-///  - "git rev-parse" reads the current branch and its last commit (HEAD);
+/// Git access that never changes your working copy:
+///  - "git fetch" only updates remote-tracking refs (origin/*), exactly like GitHub Desktop's Fetch origin.
+///    It uses the login Git already has (Git Credential Manager remembers your GitHub SSO login);
+///  - "git rev-parse" resolves origin/develop, origin/release, origin/main, whatever branch is checked out;
 ///  - "git archive" streams that commit's files and System.Formats.Tar extracts them into a temporary folder.
-/// The repository is never checked out, reset, cleaned, pulled or fetched. Uncommitted changes are not included.
+/// The repository is never checked out, reset, cleaned or pulled. Uncommitted changes are never included.
 /// </summary>
 public sealed class GitBranchService(ILogger<GitBranchService> log)
 {
+    public const string Remote = "origin";
+
     private static readonly TimeSpan ShortTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan FetchTimeout = TimeSpan.FromMinutes(3);
     private static readonly TimeSpan ArchiveTimeout = TimeSpan.FromMinutes(5);
 
     private string _git = "git";
@@ -32,22 +36,21 @@ public sealed class GitBranchService(ILogger<GitBranchService> log)
         return null;
     }
 
-    /// <summary>The checked-out branch ("(detached)" when none) and its commit, or null when the repository has no commits.</summary>
-    public async Task<(string Branch, string Sha)?> GetCurrentAsync(string repo, CancellationToken ct)
+    /// <summary>Updates remote-tracking refs. Returns null on success, otherwise a short reason (no secrets).</summary>
+    public async Task<string?> FetchAsync(string repo, CancellationToken ct)
     {
-        var sha = await Git(repo, ShortTimeout, ct, "rev-parse", "--verify", "--quiet", "HEAD^{commit}");
-        if (!sha.Success || sha.StdOut.Trim().Length < 40) return null;
-
-        var branch = await Git(repo, ShortTimeout, ct, "symbolic-ref", "--short", "--quiet", "HEAD");
-        return (branch.Success ? branch.StdOut.Trim() : "(detached)", sha.StdOut.Trim());
+        var r = await Git(repo, FetchTimeout, ct, "fetch", "--quiet", "--no-tags", Remote);
+        return r.Success ? null : ProcessRunner.SafeForLog(r.StdErr, 200);
     }
 
-    /// <summary>Paths of all files in a commit (used to find GitOps files that mention a repository).</summary>
-    public async Task<IReadOnlyList<string>> ListFilesAsync(string repo, string sha, CancellationToken ct)
+    /// <summary>Commit SHA of refs/remotes/origin/{branch}, or null when that branch does not exist.</summary>
+    public async Task<string?> ResolveRemoteBranchAsync(string repo, string branch, CancellationToken ct)
     {
-        var r = await Git(repo, ShortTimeout, ct, "ls-tree", "-r", "--name-only", "-z", sha);
-        return r.Success ? r.StdOut.Split('\0', StringSplitOptions.RemoveEmptyEntries) : [];
+        var r = await Git(repo, ShortTimeout, ct, "rev-parse", "--verify", "--quiet", $"refs/remotes/{Remote}/{branch}^{{commit}}");
+        var sha = r.StdOut.Trim();
+        return r.Success && sha.Length >= 40 ? sha : null;
     }
+
 
     /// <summary>
     /// Extracts the committed files of <paramref name="sha"/> into <paramref name="targetDir"/>.

@@ -21,7 +21,7 @@ public sealed class ContextManagerOptions
     /// <summary>Use FileSystemWatcher to react to new repositories and Git reference updates.</summary>
     public bool WatchChanges { get; set; } = true;
 
-    /// <summary>Minutes between checks of the local origin/develop and origin/main refs of all repositories (no network).</summary>
+    /// <summary>Minutes between fetch + checks of all repositories.</summary>
     public int GitCheckMinutes { get; set; } = 15;
 
     /// <summary>Quiet period after the last file-system event before a repository is checked.</summary>
@@ -47,8 +47,17 @@ public sealed class ContextManagerOptions
     /// </summary>
     public bool BlockOnSecrets { get; set; } = true;
 
-    /// <summary>Extra repository names to treat as shared infrastructure (GitOps and *-helm-chart are detected automatically).</summary>
-    public string[] SharedRepositories { get; set; } = [];
+    /// <summary>
+    /// One context per entry, built from origin/{Branch}, whatever branch is checked out locally.
+    /// Defaults to DEV = develop, QA = release, PROD = main.
+    /// </summary>
+    public EnvironmentOptions[] Environments { get; set; } = [];
+
+    /// <summary>
+    /// Run "git fetch" before each check so origin/develop, origin/release and origin/main are current.
+    /// Uses the login Git already has (Git Credential Manager / GitHub SSO); when it fails, the last fetched refs are used.
+    /// </summary>
+    public bool FetchFromGitHub { get; set; } = true;
 
     /// <summary>Extra glob patterns passed to Repomix --ignore for every repository.</summary>
     public string[] ExtraIgnorePatterns { get; set; } = [];
@@ -65,10 +74,29 @@ public sealed class ContextManagerOptions
                                  PathUtil.IsSameOrUnder(fullPath, Path.IsPathRooted(f) ? f : Path.Combine(SourcePath, f)));
 }
 
+public sealed class EnvironmentOptions
+{
+    /// <summary>Label used in file names and the index, e.g. DEV, QA, PROD.</summary>
+    public string Name { get; set; } = "";
+
+    /// <summary>Remote branch, e.g. develop, release, main.</summary>
+    public string Branch { get; set; } = "";
+}
+
 public sealed class ContextManagerOptionsSetup : IPostConfigureOptions<ContextManagerOptions>
 {
     public void PostConfigure(string? name, ContextManagerOptions o)
     {
+        if (o.Environments.Length == 0)
+        {
+            o.Environments =
+            [
+                new() { Name = "DEV", Branch = "develop" },
+                new() { Name = "QA", Branch = "release" },
+                new() { Name = "PROD", Branch = "main" },
+            ];
+        }
+
         if (string.IsNullOrWhiteSpace(o.StagingPath))
         {
             o.StagingPath = Path.Combine(
@@ -112,6 +140,16 @@ public sealed class ContextManagerOptionsValidator : IValidateOptions<ContextMan
                            "'AllowCloudPublish' is true. Set it only if your corporate policy permits it.");
         }
 
+        foreach (var env in o.Environments)
+        {
+            if (string.IsNullOrWhiteSpace(env.Name) || env.Name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+                errors.Add($"Environments: '{env.Name}' is not a valid name (it is used in file names).");
+            if (string.IsNullOrWhiteSpace(env.Branch) || env.Branch.StartsWith('-') || env.Branch.Contains(' ') || env.Branch.Contains(".."))
+                errors.Add($"Environments: '{env.Branch}' is not a valid branch name.");
+        }
+
+        if (o.Environments.Select(e => e.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count() != o.Environments.Length)
+            errors.Add("Environments: names must be unique.");
         if (o.GitCheckMinutes < 1) errors.Add("GitCheckMinutes must be at least 1.");
         if (o.DebounceSeconds < 1) errors.Add("DebounceSeconds must be at least 1.");
         if (o.RepomixTimeoutMinutes < 1) errors.Add("RepomixTimeoutMinutes must be at least 1.");

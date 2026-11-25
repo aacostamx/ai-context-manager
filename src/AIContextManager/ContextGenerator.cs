@@ -5,8 +5,8 @@ using Microsoft.Extensions.Options;
 namespace AIContextManager;
 
 /// <summary>
-/// One repository: read the checked-out branch and commit, skip if unchanged, snapshot, Repomix, secret scan, publish.
-/// Everything happens in StagingPath; only a clean file is copied to OutputPath.
+/// One repository + one environment: resolve origin/{branch}, skip if unchanged, snapshot, Repomix, secret scan, publish.
+/// Everything happens in StagingPath; only the finished file is copied to OutputPath.
 /// </summary>
 public sealed class ContextGenerator(
     IOptions<ContextManagerOptions> options,
@@ -14,23 +14,26 @@ public sealed class ContextGenerator(
     RepomixService repomix,
     ILogger<ContextGenerator> log)
 {
-    private const string FormatVersion = "3"; // bump when the output format changes to force regeneration
+    private const string FormatVersion = "4"; // bump when the output format changes to force regeneration
     private readonly ContextManagerOptions _o = options.Value;
 
     // BlockOnSecrets is part of the fingerprint so blocked repos are retried as soon as the setting is turned off.
     public string Fingerprint => ChangeDetector.Fingerprint([FormatVersion, $"block={_o.BlockOnSecrets}", .. repomix.IgnorePatterns]);
 
-    public async Task<ContextState> ProcessAsync(RepositoryInfo repo, ContextState? previous, CancellationToken ct)
+    public async Task<ContextState> ProcessAsync(RepositoryInfo repo, EnvironmentOptions env, ContextState? previous, CancellationToken ct)
     {
-        var current = await git.GetCurrentAsync(repo.RootPath, ct);
-        if (current is not var (branch, sha))
+        var branch = env.Branch;
+        var label = $"{repo.Name} {env.Name} ({GitBranchService.Remote}/{branch})";
+
+        var sha = await git.ResolveRemoteBranchAsync(repo.RootPath, branch, ct);
+        if (sha is null)
         {
-            if (previous?.Status != ContextStatus.Failed) log.LogWarning("{Repo}: no commits yet, nothing to generate.", repo.Name);
-            return new ContextState { Status = ContextStatus.Failed, Message = "No commits" };
+            if (previous?.Status != ContextStatus.MissingBranch)
+                log.LogWarning("{Context}: branch not found, skipped. No other branch is used.", label);
+            return new ContextState { Branch = branch, Status = ContextStatus.MissingBranch, Message = $"{GitBranchService.Remote}/{branch} not found" };
         }
 
-        var label = $"{repo.Name} ({branch})";
-        var publishedFile = repo.ContextFile(_o.OutputPath);
+        var publishedFile = repo.ContextFile(_o.OutputPath, env);
         if (!ChangeDetector.NeedsRegeneration(previous, branch, sha, File.Exists(publishedFile), Fingerprint))
         {
             log.LogDebug("{Context}: unchanged at {Sha}", label, sha[..7]);
@@ -39,10 +42,10 @@ public sealed class ContextGenerator(
 
         log.LogInformation("{Context}: generating context for commit {Sha}", label, sha[..7]);
         var now = DateTimeOffset.UtcNow;
-        var work = Path.Combine(_o.StagingPath, "work", repo.Name);
+        var work = Path.Combine(_o.StagingPath, "work", $"{repo.Name}-{env.Name}");
         var snapshot = Path.Combine(work, "snapshot");
         var rawOutput = Path.Combine(work, "repomix-output.md");
-        var stagedFile = repo.ContextFile(Path.Combine(_o.StagingPath, "contexts"));
+        var stagedFile = repo.ContextFile(Path.Combine(_o.StagingPath, "contexts"), env);
         var reportFile = Path.ChangeExtension(stagedFile, ".secret-scan.txt");
         var state = new ContextState { Branch = branch, CommitSha = sha, Fingerprint = Fingerprint };
 
@@ -57,7 +60,7 @@ public sealed class ContextGenerator(
                 return state with { Status = ContextStatus.Failed, Message = result.Error };
             }
 
-            var content = BuildHeader(repo, branch, sha, now, result.TotalTokens, skipped) +
+            var content = BuildHeader(repo, env, sha, now, result.TotalTokens, skipped) +
                           await File.ReadAllTextAsync(rawOutput, ct);
             PathUtil.WriteAtomically(stagedFile, content);
 
@@ -101,24 +104,24 @@ public sealed class ContextGenerator(
         }
     }
 
-    private static string BuildHeader(RepositoryInfo repo, string branch, string sha, DateTimeOffset now, long? tokens, int skippedSensitive)
+    private static string BuildHeader(RepositoryInfo repo, EnvironmentOptions env, string sha, DateTimeOffset now, long? tokens, int skippedSensitive)
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"# {repo.Name} context ({branch})");
+        sb.AppendLine($"# {repo.Name} - {env.Name} context ({GitBranchService.Remote}/{env.Branch})");
         sb.AppendLine();
         sb.AppendLine("| Field | Value |");
         sb.AppendLine("|---|---|");
         sb.AppendLine($"| Repository | `{repo.Name}` |");
         sb.AppendLine($"| Original path | `{repo.RootPath}` |");
-        sb.AppendLine($"| Solution / component | {repo.Solution} / {repo.Component} |");
-        sb.AppendLine($"| Branch | `{branch}` |");
+        sb.AppendLine($"| Environment | {env.Name} |");
+        sb.AppendLine($"| Branch | `{GitBranchService.Remote}/{env.Branch}` |");
         sb.AppendLine($"| Commit | `{sha}` |");
         sb.AppendLine($"| Generated (UTC) | {now:yyyy-MM-dd HH:mm:ss} |");
         sb.AppendLine($"| Repomix total tokens | {tokens?.ToString("N0") ?? "not reported"} |");
         sb.AppendLine($"| Sensitive files excluded | {skippedSensitive} |");
         sb.AppendLine();
-        sb.AppendLine("> Last commit of the branch checked out in GitHub Desktop. Uncommitted changes are not included. " +
-                      "Generated by AIContextManager; do not edit.");
+        sb.AppendLine($"> Last commit of `{GitBranchService.Remote}/{env.Branch}` as of the last fetch, independent of the branch checked out locally. " +
+                      "Uncommitted changes are not included. Generated by AIContextManager; do not edit.");
         sb.AppendLine();
         sb.AppendLine("---");
         sb.AppendLine();
@@ -128,9 +131,8 @@ public sealed class ContextGenerator(
     private static string BuildReport(string label, string sha, IReadOnlyList<SecretFinding> findings)
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"Publication blocked for {label} at commit {sha}.");
-        sb.AppendLine("Possible secrets were detected. Values are intentionally not shown.");
-        sb.AppendLine("Fix: remove the secret from the repository, or exclude the file with .repomixignore / ExtraIgnorePatterns.");
+        sb.AppendLine($"Possible secrets in {label} at commit {sha}. Values are intentionally not shown.");
+        sb.AppendLine("To silence a false positive, exclude the file with .repomixignore / ExtraIgnorePatterns.");
         sb.AppendLine();
         foreach (var f in findings) sb.AppendLine($"- {f.Rule}: {f.File} (approx. line {f.Line})");
         return sb.ToString();

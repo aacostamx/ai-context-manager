@@ -32,7 +32,6 @@ builder.Services.AddSingleton<IValidateOptions<ContextManagerOptions>, ContextMa
 
 builder.Services.AddSingleton(new RunMode(once));
 builder.Services.AddSingleton<RepositoryDiscoveryService>();
-builder.Services.AddSingleton<RepositoryGroupingService>();
 builder.Services.AddSingleton<GitBranchService>();
 builder.Services.AddSingleton<RepomixService>();
 builder.Services.AddSingleton<ContextGenerator>();

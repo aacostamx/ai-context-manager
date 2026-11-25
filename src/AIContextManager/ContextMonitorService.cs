@@ -8,17 +8,16 @@ public sealed record RunMode(bool Once);
 
 /// <summary>
 /// Main loop:
-///  - startup: discover, generate what changed, write the index;
-///  - FileSystemWatcher: new/removed repositories, branch switches and new commits are debounced and checked;
-///  - every GitCheckMinutes: check all repositories (safety net for missed events).
-/// One context per repository: the last commit of the branch checked out in GitHub Desktop.
-/// This service never contacts GitHub. Working-tree edits are ignored on purpose.
+///  - startup: discover, fetch, generate what changed (DEV/QA/PROD per repository), write the index;
+///  - every GitCheckMinutes: fetch + check all repositories;
+///  - FileSystemWatcher: new/removed repositories and updated remote refs (e.g. GitHub Desktop's Fetch origin)
+///    are debounced and checked without fetching.
+/// Working-tree edits and the locally checked-out branch are ignored on purpose.
 /// </summary>
 public sealed class ContextMonitorService(
     IOptions<ContextManagerOptions> options,
     RunMode mode,
     RepositoryDiscoveryService discovery,
-    RepositoryGroupingService grouping,
     GitBranchService git,
     RepomixService repomix,
     ContextGenerator generator,
@@ -30,7 +29,6 @@ public sealed class ContextMonitorService(
     private const string DiscoverKey = "<discover>";
     private readonly ContextManagerOptions _o = options.Value;
     private readonly ChangeDebouncer _debouncer = new(TimeSpan.FromSeconds(options.Value.DebounceSeconds), TimeProvider.System);
-    private readonly Dictionary<string, IReadOnlyList<string>> _gitOpsFilesCache = new(StringComparer.OrdinalIgnoreCase);
     private volatile IReadOnlyList<RepositoryInfo> _repos = [];
     private FileSystemWatcher? _watcher;
 
@@ -48,7 +46,7 @@ public sealed class ContextMonitorService(
 
             state.Load();
             Discover();
-            await ProcessAsync(_repos, ct);
+            await ProcessAsync(_repos, fetch: true, ct);
 
             if (mode.Once)
             {
@@ -58,7 +56,7 @@ public sealed class ContextMonitorService(
             }
 
             if (_o.WatchChanges) StartWatcher();
-            log.LogInformation("Monitoring {Source}. Local ref check every {Minutes} min{Watch}. Press Ctrl+C to stop.",
+            log.LogInformation("Monitoring {Source}. Fetch + check every {Minutes} min{Watch}. Press Ctrl+C to stop.",
                 _o.SourcePath, _o.GitCheckMinutes, _o.WatchChanges ? ", file watcher on" : "");
 
             var nextGitCheck = DateTimeOffset.UtcNow.AddMinutes(_o.GitCheckMinutes);
@@ -72,15 +70,15 @@ public sealed class ContextMonitorService(
                     var before = _repos.Select(r => r.RootPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
                     Discover();
                     var added = _repos.Where(r => !before.Contains(r.RootPath)).ToList();
-                    await ProcessAsync(added, ct, forceIndex: true);
+                    await ProcessAsync(added, fetch: true, ct, forceIndex: true);
                 }
 
                 var changed = _repos.Where(r => ready.Contains(r.RootPath)).ToList();
-                if (changed.Count > 0) await ProcessAsync(changed, ct);
+                if (changed.Count > 0) await ProcessAsync(changed, fetch: false, ct);
 
                 if (DateTimeOffset.UtcNow >= nextGitCheck)
                 {
-                    await ProcessAsync(_repos, ct);
+                    await ProcessAsync(_repos, fetch: true, ct);
                     nextGitCheck = DateTimeOffset.UtcNow.AddMinutes(_o.GitCheckMinutes);
                 }
             }
@@ -119,22 +117,22 @@ public sealed class ContextMonitorService(
             return false;
         }
 
-        log.LogInformation("Using {Git}, repomix {Repomix}. Source: {Source} -> Output: {Output} (staging: {Staging})",
-            gitVersion, repomixVersion, _o.SourcePath, _o.OutputPath, _o.StagingPath);
+        log.LogInformation("Using {Git}, repomix {Repomix}. Source: {Source} -> Output: {Output}. Environments: {Envs}",
+            gitVersion, repomixVersion, _o.SourcePath, _o.OutputPath,
+            string.Join(", ", _o.Environments.Select(e => $"{e.Name}={e.Branch}")));
         return true;
     }
 
     private void Discover()
     {
         var previous = _repos;
-        _repos = grouping.Group(discovery.Discover());
+        _repos = discovery.Discover().Select(p => new RepositoryInfo(Path.GetFileName(p), p)).ToList();
 
         var added = _repos.Select(r => r.Name).Except(previous.Select(r => r.Name)).ToList();
         var removed = previous.Select(r => r.Name).Except(_repos.Select(r => r.Name)).ToList();
         if (previous.Count == 0)
         {
-            foreach (var r in _repos)
-                log.LogInformation("Found {Repo} -> {File}", r.Name, r.RelativeContextFile);
+            log.LogInformation("Found {Count} repositories: {Repos}", _repos.Count, string.Join(", ", _repos.Select(r => r.Name)));
         }
         else
         {
@@ -143,55 +141,45 @@ public sealed class ContextMonitorService(
         }
     }
 
-    private async Task ProcessAsync(IReadOnlyList<RepositoryInfo> repos, CancellationToken ct, bool forceIndex = false)
+    private async Task ProcessAsync(IReadOnlyList<RepositoryInfo> repos, bool fetch, CancellationToken ct, bool forceIndex = false)
     {
         var changed = forceIndex;
         var regenerated = 0;
+        var fetchFailed = false;
+
         foreach (var repo in repos)
         {
             ct.ThrowIfCancellationRequested();
-            var before = state.Get(repo);
-            var after = await generator.ProcessAsync(repo, before, ct);
-            state.Set(repo, after);
-            if (before != after)
+
+            // After the first fetch failure (usually: not logged in, or offline) stop trying for this pass,
+            // so one problem does not cost a timeout per repository.
+            if (fetch && _o.FetchFromGitHub && !fetchFailed && await git.FetchAsync(repo.RootPath, ct) is { } error)
             {
-                changed = true;
-                regenerated++;
+                fetchFailed = true;
+                log.LogWarning("git fetch failed for {Repo}: {Error}. Using the last fetched branches for this pass. " +
+                               "If you are not logged in, run 'git fetch' once in a terminal inside any repository (see README).",
+                    repo.Name, error);
+            }
+
+            foreach (var env in _o.Environments)
+            {
+                var before = state.Get(repo, env);
+                var after = await generator.ProcessAsync(repo, env, before, ct);
+                state.Set(repo, env, after);
+                if (before != after)
+                {
+                    changed = true;
+                    regenerated++;
+                }
             }
         }
 
         state.Save();
         if (repos.Count > 0)
-            log.LogInformation("Checked {Count} repositories: {Regenerated} regenerated, {UpToDate} already up to date.",
-                repos.Count, regenerated, repos.Count - regenerated);
+            log.LogInformation("Checked {Count} repositories, {Regenerated} context(s) updated{Fetch}.",
+                repos.Count, regenerated, fetch && _o.FetchFromGitHub ? (fetchFailed ? ", fetch FAILED (used last fetched refs)" : ", fetch OK") : "");
         if (changed || !File.Exists(Path.Combine(_o.OutputPath, IndexWriter.IndexFileName)))
-            index.Write(_repos, await FindDeploymentFilesAsync(ct));
-    }
-
-    /// <summary>For each solution, GitOps files (checked-out branch) whose path mentions one of its repositories.</summary>
-    private async Task<IReadOnlyDictionary<string, IReadOnlyList<string>>> FindDeploymentFilesAsync(CancellationToken ct)
-    {
-        var allFiles = new List<string>();
-        foreach (var gitops in _repos.Where(r => r.IsShared && r.Name.Contains("gitops", StringComparison.OrdinalIgnoreCase)))
-        {
-            var sha = state.Get(gitops)?.CommitSha;
-            if (sha is null) continue;
-            if (!_gitOpsFilesCache.TryGetValue(sha, out var files))
-                _gitOpsFilesCache[sha] = files = await git.ListFilesAsync(gitops.RootPath, sha, ct);
-            allFiles.AddRange(files.Select(f => $"{gitops.Name}/{f}"));
-        }
-
-        var result = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var solution in _repos.Where(r => !r.IsShared).GroupBy(r => r.Solution, StringComparer.OrdinalIgnoreCase))
-        {
-            var names = solution.Select(r => r.Name).ToList();
-            result[solution.Key] = allFiles
-                .Where(f => names.Any(n => f.Contains(n, StringComparison.OrdinalIgnoreCase)))
-                .Take(25)
-                .ToList();
-        }
-
-        return result;
+            index.Write(_repos);
     }
 
     private void StartWatcher()
@@ -242,10 +230,8 @@ public sealed class ContextMonitorService(
             return;
         }
 
-        // Branch switch (.git/HEAD) or new commit/pull on a local branch (refs/heads, packed-refs).
-        // Working-tree edits are ignored: the context is the last commit.
-        if (inRepo.Equals(".git/HEAD", StringComparison.OrdinalIgnoreCase) ||
-            inRepo.StartsWith(".git/refs/heads/", StringComparison.OrdinalIgnoreCase) ||
+        // Remote-tracking refs changed (a fetch by GitHub Desktop or by this app). Working-tree edits are ignored.
+        if (inRepo.StartsWith(".git/refs/remotes/", StringComparison.OrdinalIgnoreCase) ||
             inRepo.Equals(".git/packed-refs", StringComparison.OrdinalIgnoreCase))
             _debouncer.Signal(repo.RootPath);
     }
